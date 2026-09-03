@@ -168,7 +168,29 @@ def split_diff_by_file(diff: str) -> list[tuple[str, str]]:
     Each chunk starts at a `diff --git a/... b/...` line and runs until the next
     one. Needed so truncation can drop whole files instead of cutting mid-hunk.
     """
-    raise NotImplementedError
+    lines = diff.splitlines()
+
+    diffs = []
+    chunk_lines = []
+    path = None
+    for line in lines:
+        if line.strip().startswith("diff --git"):
+            if chunk_lines:
+                diffs.append((path, "\n".join(chunk_lines)))
+
+            path = line.split()[-1]
+            path = path[2:] if path.startswith("b/") else None
+
+            if not path:
+                raise ValueError(f"Unexpected diff line format: {line}")
+
+            chunk_lines = [line]
+        else:
+            chunk_lines.append(line)
+    if chunk_lines:
+        diffs.append((path, "\n".join(chunk_lines)))
+
+    return diffs
 
 
 
