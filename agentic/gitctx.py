@@ -174,7 +174,7 @@ def split_diff_by_file(diff: str) -> list[tuple[str, str]]:
     chunk_lines = []
     path = None
     for line in lines:
-        if line.strip().startswith("diff --git"):
+        if line.startswith("diff --git "):
             if chunk_lines:
                 diffs.append((path, "\n".join(chunk_lines)))
 

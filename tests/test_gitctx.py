@@ -10,6 +10,8 @@ SHELL functions (_run_git, current_branch, merge_base, unreviewed_paths,
 inspect_repository) are not covered here yet — they need a real repo fixture.
 Add tests/test_gitctx_shell.py with a tmp_path git repo when you get there.
 """
+import pytest
+
 from agentic.gitctx import (
     ChangedFile,
     parse_numstat_line,
@@ -57,7 +59,6 @@ def test_parse_numstat_line_binary_file_has_none_counts():
 
 
 def test_parse_numstat_line_malformed_raises():
-    import pytest
     with pytest.raises(ValueError):
         parse_numstat_line("just one field\n")
 
@@ -85,7 +86,6 @@ def test_parse_namestatus_line_copy_does_not_crash():
 
 
 def test_parse_namestatus_line_malformed_raises():
-    import pytest
     with pytest.raises(ValueError):
         parse_namestatus_line("nofieldsatall\n")
 
@@ -165,7 +165,47 @@ def test_join_changed_files_empty_inputs_give_empty_list():
 
 
 # --------------------------------------------------------- split_diff_by_file
-#
+
+from pathlib import Path
+
+DATA_DIR = Path(__file__).parent / "data"
+MULTI_FILE_DIFF = (DATA_DIR / "multi_file_multi_hunk.diff").read_text()
+QUOTES_DIFF_GIT_DIFF = (DATA_DIR / "quotes_diff_git_in_content.diff").read_text()
+
+def test_split_diff_by_file_multi_file():
+    result = split_diff_by_file(MULTI_FILE_DIFF)
+    assert len(result) == 3
+    paths = [path for path, _ in result]
+    assert paths == [
+        "src/app/web/app.js",
+        "src/app/web/index.html",
+        "src/app/web/style.css",
+    ]
+
+def test_split_diff_by_file_multi_hunk_stays_one_chunk():
+    result = split_diff_by_file(MULTI_FILE_DIFF)
+    # The first file has two hunks, but they should be in the same chunk.
+    first_path, first_content = result[0]
+    assert first_path == "src/app/web/app.js"
+    assert first_content.count("@@") > 1  # two hunk headers in the same chunk
+
+def test_split_diff_by_file_no_b_prefix_in_path():
+    result = split_diff_by_file(MULTI_FILE_DIFF)
+    for path, _ in result:
+        assert not path.startswith("b/")  # ensure the "b/" prefix is stripped
+
+def test_split_diff_by_file_ignores_diff_git_in_content():
+    result = split_diff_by_file(QUOTES_DIFF_GIT_DIFF)
+    assert len(result) == 1
+    path, content = result[0]
+    assert path == "docs/md-files/experiments.md"
+    assert "diff --git" in content  # ensure it didn't split on that line
+
+def test_split_diff_by_file_empty_input():
+    result = split_diff_by_file("")
+    assert result == []  # should return an empty list, not crash
+
+
 # TODO(you): design these yourself — the function has real edge cases you
 # already found in review. Capture fixture text the same way as above:
 #

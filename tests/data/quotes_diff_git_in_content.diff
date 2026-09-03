@@ -1,0 +1,22 @@
+diff --git a/docs/md-files/experiments.md b/docs/md-files/experiments.md
+index ba0c496..0643967 100644
+--- a/docs/md-files/experiments.md
++++ b/docs/md-files/experiments.md
+@@ -103,7 +103,7 @@ Color coding: blue = gray (≥0.8), red = black thick (≥0.5), green = black th
+ 
+ **Consequence:** `rawdict` spans have no `"text"` key — only `"chars"`. Added `_span_text(span)` helper (`"".join(c["c"] for c in span.get("chars", []))`) and replaced all `span["text"]` accesses in Cell 10.
+ 
+-## kraft_test.pdf — schematic region clustering (Cell 11)
++## kraft_test.pdf — schematic region clustering (Cell 11) — example of a pasted diff below
+ diff --git a/example.py b/example.py
+ index abc123..def456 100644
+ --- a/example.py
+@@ -112,6 +112,8 @@ index abc123..def456 100644
+ -old line
+ +new line
+ 
++That's the format a pasted diff takes when quoted in these notes.
++
+ ## I am adding some new changes here for agentic repo
+ 
+ **Approach:** 2D density map with full path span counting.

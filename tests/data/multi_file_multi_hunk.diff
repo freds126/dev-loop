@@ -1,0 +1,539 @@
+diff --git a/src/app/web/app.js b/src/app/web/app.js
+index 7750dda..2668a57 100644
+--- a/src/app/web/app.js
++++ b/src/app/web/app.js
+@@ -15,6 +15,11 @@ const S = {
+   candidates: null, removed: [], addKind: null,
+   editModeOn: false, altHeld: false, editHoverRef: null, slide: null, hoverId: null,
+   sel: new Set(), hidden: new Set(), hiddenCables: new Set(), editSel: new Set(),
++  // Click-to-isolate, the debug viewer's interaction: one class shown, everything else
++  // hidden, clicking the same thing again toggles back. It DRIVES the existing hidden sets
++  // rather than adding a parallel mechanism, so `drawItems` needs to know nothing about it.
++  isolate: null,
++  scrollToRow: false,   // a page click should bring its row into view; a sidebar click must not
+ };
+ let projToken = 0;                    // cancels an in-flight project sweep
+ const CABLE_DEFAULT = "#12a150";
+@@ -46,6 +51,26 @@ async function boot() {
+ function bindUi() {
+   $("zoomin").onclick = () => setZoom(S.zoom * 1.25);
+   $("zoomout").onclick = () => setZoom(S.zoom / 1.25);
++  // Typed zoom. Commit on Enter or on blur, never on every keystroke — typing "150" would
++  // otherwise re-render at 1% the moment the first digit lands.
++  const commitZoom = () => {
++    const pct = parseFloat($("zoomval").value);
++    if (isFinite(pct) && pct > 0) setZoom(pct / 100);
++    // Always show what was ACTUALLY applied, not what was typed. `setZoom` clamps
++    // (clampZoom, 20-600%), so typing 5000 leaves the drawing at 600% and the field must
++    // say 600 rather than keep the lie. Written directly rather than through `showZoom`
++    // because this also runs on blur, where the field is still document.activeElement and
++    // showZoom's "don't clobber typing" guard would skip it — which left junk as an empty box.
++    $("zoomval").value = Math.round(S.zoom * 100);
++  };
++  $("zoomval").onkeydown = (e) => {
++    if (e.key === "Enter") { e.preventDefault(); $("zoomval").blur(); }
++    else if (e.key === "Escape") { showZoom(); $("zoomval").blur(); }
++    e.stopPropagation();                              // the canvas owns these keys otherwise
++  };
++  $("zoomval").onchange = commitZoom;
++  $("zoomval").onblur = commitZoom;
++  $("showall").onclick = () => { clearIsolate(); clearSel(); };
+   $("export").onclick = exportCsv;
+   $("mSelect").onclick = () => setMode("select");
+   $("mAdd").onclick = () => setMode("add");
+@@ -105,7 +130,7 @@ function zoomBy(factor, clientX, clientY) {
+   const canvas = $("pdf"), k = S.zoom / renderedZoom;
+   canvas.style.width = (canvas.width * k) + "px";
+   canvas.style.height = (canvas.height * k) + "px";
+-  $("zlabel").textContent = Math.round(S.zoom * 100) + "%";
++  showZoom();
+   stage.scrollLeft = contentX * ratio - cx;
+   stage.scrollTop = contentY * ratio - cy;
+   clearTimeout(zoomSettleTimer);       // …then rasterise ONCE, after the gesture stops
+@@ -481,7 +506,7 @@ async function render() {
+   catch { return; }                    // cancelled (or failed) — a newer render owns the canvas
+   if (renderTask === myTask) renderTask = null;
+   renderedZoom = S.zoom;
+-  $("zlabel").textContent = Math.round(S.zoom * 100) + "%";
++  showZoom();
+ }
+ const SX = () => $("pdf").width / S.page.w_mm;
+ const SY = () => $("pdf").height / S.page.h_mm;
+@@ -564,16 +589,21 @@ function buildBom() {
+   $("status").textContent = `${S.symbols.length} symbols · ${cableLenM().toFixed(1)} m cable`;
+   const types = [...S.types].sort((a, b) => (cnt.get(b.id)||0) - (cnt.get(a.id)||0));
+   const groups = cableGroups();
++  const act = activeRows();
+   let html = `<div class="section first">
+       <input type="checkbox" data-all="sym" title="show or hide all symbols">
+       <span>Symbols · ${S.symbols.length}</span></div>`;
+   for (const t of types) {
+     const c = cnt.get(t.id) || 0;
+-    html += `<div class="bomrow${S.hidden.has(t.id)?" off":""}" data-t="${t.id}">
++    html += `<div class="bomrow${S.hidden.has(t.id)?" off":""}${act.types.has(t.id)?" sel":""}"
++      data-t="${t.id}" style="border-left-color:${t.color}"
++      title="click to isolate · double-click to select all of this type">
+       <input type="checkbox" ${S.hidden.has(t.id)?"":"checked"} title="show/hide">
+       ${typeSwatch(t)}
+-      <span class="lbl"><span class="code">${esc(t.code || t.desc || "(unnamed)")}</span>
+-        <div class="desc">${esc(t.desc||"")}</div></span>
++      <span class="lbl">${t.code
++          ? `<span class="code">${esc(t.code)}</span>`
++          : `<span class="noco">${esc(t.desc || "(unnamed)")}</span>`}
++        ${t.code ? `<div class="desc">${esc(t.desc||"")}</div>` : ""}</span>
+       <button class="addbtn" title="Add this type">＋</button>
+       <span class="cnt">${c}</span></div>`;
+   }
+@@ -583,7 +613,9 @@ function buildBom() {
+       <span>Cables · ${cableLenM().toFixed(1)} m</span></div>`;
+   for (const g of groups) {
+     const k = cableKey(g.label), off = S.hiddenCables.has(k);
+-    html += `<div class="bomrow${off?" off":""}" data-cl="${esc(k)}">
++    html += `<div class="bomrow${off?" off":""}${act.cabs.has(k)?" sel":""}"
++      data-cl="${esc(k)}" style="border-left-color:${cableColor(g.label)}"
++      title="click to isolate · double-click to select all of this type">
+       <input type="checkbox" ${off?"":"checked"} title="show/hide">
+       <span class="sw" style="background:${cableColor(g.label)}"></span>
+       <span class="lbl"><span class="code">${esc(g.label || "unclassified")}</span></span>
+@@ -618,6 +650,7 @@ function buildBom() {
+     box.onchange = (e) => {
+       if (e.target.checked) keys.forEach((k) => hiddenSet.delete(k));
+       else keys.forEach((k) => hiddenSet.add(k));
++      S.isolate = null;
+       buildBom(); drawItems();
+     };
+   }
+@@ -625,17 +658,30 @@ function buildBom() {
+   bom.querySelectorAll(".bomrow[data-t]").forEach((row) => {
+     const t = +row.dataset.t;
+     row.querySelector("input").onchange = (e) => { if (e.target.checked) S.hidden.delete(t); else S.hidden.add(t);
++      S.isolate = null;                     // hand-picked visibility is not an isolation
+       row.classList.toggle("off", !e.target.checked); syncMasters(); drawItems(); };
+-    row.querySelector(".addbtn").onclick = () => { S.addTypeId = t; setMode("add"); };
++    row.querySelector(".addbtn").onclick = (e) => { e.stopPropagation(); S.addTypeId = t; setMode("add"); };
++    // single click isolates; double click selects the whole type. The dblclick guard stops
++    // the first click of a double from isolating and then immediately un-isolating.
++    row.onclick = (e) => { if (e.target.closest("input,.addbtn")) return;
++      if (e.detail > 1) return; isolateType(t); };
+     row.ondblclick = (e) => { if (e.target.closest("input,.addbtn")) return; selectOnlyType(t); };
+   });
+   bom.querySelectorAll(".bomrow[data-cl]").forEach((row) => {
+     const k = row.dataset.cl;
+     row.querySelector("input").onchange = (e) => { if (e.target.checked) S.hiddenCables.delete(k); else S.hiddenCables.add(k);
++      S.isolate = null;
+       row.classList.toggle("off", !e.target.checked); syncMasters(); drawItems(); };
++    row.onclick = (e) => { if (e.target.closest("input")) return;
++      if (e.detail > 1) return; isolateCable(k); };
+     row.ondblclick = (e) => { if (e.target.closest("input")) return; selectOnlyCableKey(k); };
+   });
+   syncMasters();
++  if (S.scrollToRow) {
++    S.scrollToRow = false;
++    const r = bom.querySelector(".bomrow.sel");
++    if (r) r.scrollIntoView({ block: "nearest" });
++  }
+   refreshAddType();
+ }
+ // ---------- BOM row icon: the type's real geometry, drawn as a tiny inline SVG ----------
+@@ -664,6 +710,40 @@ function iconSvg(shapes, color) {
+ function typeSwatch(t) {
+   return iconSvg(t.icon, t.color) || `<span class="sw" style="background:${t.color}"></span>`;
+ }
++// ---------- click to isolate (frontend-style.md §5) ----------
++// Clicking a row shows ONLY that class; clicking it again shows everything. Implemented on
++// top of `S.hidden` / `S.hiddenCables` so the drawing code is untouched — isolate is just a
++// particular pattern of hiding, and the per-row checkboxes keep working underneath it.
++function allCableKeys() { return cableGroups().map((g) => cableKey(g.label)); }
++function isolateType(id) {
++  if (S.isolate && S.isolate.kind === "type" && S.isolate.id === id) { clearIsolate(); return; }
++  S.isolate = { kind: "type", id };
++  S.hidden = new Set(S.types.map((t) => t.id).filter((x) => x !== id));
++  S.hiddenCables = new Set(allCableKeys());
++  refresh();
++}
++function isolateCable(k) {
++  if (S.isolate && S.isolate.kind === "cable" && S.isolate.key === k) { clearIsolate(); return; }
++  S.isolate = { kind: "cable", key: k };
++  S.hidden = new Set(S.types.map((t) => t.id));
++  S.hiddenCables = new Set(allCableKeys().filter((x) => x !== k));
++  refresh();
++}
++function clearIsolate() {
++  if (!S.isolate) return;
++  S.isolate = null; S.hidden.clear(); S.hiddenCables.clear(); refresh();
++}
++// Which rows read as "active": the isolated one, plus any row owning a selected item — that
++// is what makes a click on the PAGE light up its row in the sidebar.
++function activeRows() {
++  const types = new Set(), cabs = new Set();
++  if (S.isolate && S.isolate.kind === "type") types.add(S.isolate.id);
++  if (S.isolate && S.isolate.kind === "cable") cabs.add(S.isolate.key);
++  for (const s of S.symbols) if (S.sel.has("s" + s.id)) types.add(s.type_id);
++  for (const c of S.cables) if (S.sel.has("c" + c.id)) cabs.add(cableKey(c.label));
++  return { types, cabs };
++}
++
+ // double-click a BOM row → select ONLY that type/label, replacing whatever was selected
+ function selectOnlyType(typeId) {
+   S.hidden.delete(typeId);
+@@ -867,6 +947,11 @@ function undo() {
+   S.sel.clear(); saveBom(); refresh();
+ }
+ function clearSel() { S.sel.clear(); S.addKind = null; refresh(); }
++// The zoom field is an input, so it must never be written while the user is typing in it.
++function showZoom() {
++  const el = $("zoomval");
++  if (el && document.activeElement !== el) el.value = Math.round(S.zoom * 100);
++}
+ function deleteSelection() {
+   const delC = S.cables.filter((c) => S.sel.has("c" + c.id));
+   const delS = S.symbols.some((s) => S.sel.has("s" + s.id));
+@@ -1014,7 +1099,23 @@ function bindPointer() {
+     slideAdjust(e.deltaY < 0 ? SLIDE_STEP_MM : -SLIDE_STEP_MM);
+     slideRenderPreview();
+   }, { passive: false });
+-  $("canvaswrap").addEventListener("dblclick", (e) => { if (S.mode === "cable") { e.preventDefault(); finishDraw(); } });
++  $("canvaswrap").addEventListener("dblclick", (e) => {
++    if (S.mode === "cable") { e.preventDefault(); finishDraw(); return; }
++    // Double-click a symbol or cable on the PAGE -> select only its row, same as
++    // double-clicking that row in the sidebar. Edit mode owns pieces, so leave it alone.
++    if (!S.page || editActive() || S.slide || S.mode !== "select") return;
++    const id = pickAt(toMM(e));
++    if (!id) return;
++    e.preventDefault();
++    S.scrollToRow = true;
++    if (id[0] === "s") {
++      const sym = S.symbols.find((x) => "s" + x.id === id);
++      if (sym) selectOnlyType(sym.type_id);
++    } else {
++      const cab = S.cables.find((x) => "c" + x.id === id);
++      if (cab) selectOnlyCableKey(cableKey(cab.label));
++    }
++  });
+   $("canvaswrap").addEventListener("mousedown", (e) => {
+     if (e.button !== 0 || !S.page) return;
+     if (S.slide) return;                        // sliding owns the canvas until Done/Cancel
+@@ -1051,7 +1152,9 @@ function bindPointer() {
+     const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up);
+       pointerDragging = false;
+       $("marquee").classList.add("hidden"); $("addprev").classList.add("hidden");
+-      if (drag.kind === "click") { S.sel = new Set([drag.id]); S.addKind = null; refresh(); }
++      if (drag.kind === "click") { S.sel = new Set([drag.id]); S.addKind = null;
++        S.scrollToRow = true;                 // page -> sidebar: show me which row this is
++        refresh(); }
+       else if (drag.kind === "marquee") marqueeSelect(drag.start, drag.cur, drag.shift);
+       else if (drag.kind === "add") addBox(drag.start, drag.cur, e.ctrlKey || e.metaKey); };
+     window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+diff --git a/src/app/web/index.html b/src/app/web/index.html
+index 6ed3d31..6c9adfa 100644
+--- a/src/app/web/index.html
++++ b/src/app/web/index.html
+@@ -20,7 +20,14 @@
+     </div>
+     <button id="reset" title="Discard manual edits, re-run auto-detect">Reset</button>
+     <span class="sep"></span>
+-    <button id="zoomout">−</button><span id="zlabel">100%</span><button id="zoomin">+</button>
++    <span class="zoomwrap">
++      <button id="zoomout" title="Zoom out">−</button>
++      <!-- bounds match clampZoom() in app.js (0.2–6.0); a field that offers more than the
++           app will do just snaps back and looks broken -->
++      <input id="zoomval" type="number" min="20" max="600" step="5" value="100"
++             title="Zoom percent — type a value and press Enter"><span class="pct">%</span>
++      <button id="zoomin" title="Zoom in">+</button>
++    </span>
+     <button id="export">Export CSV</button>
+   </header>
+ 
+@@ -64,6 +71,7 @@
+         </div>
+         <div id="projinfo" class="mut hidden"></div>
+         <div id="docinfo" class="mut hidden"></div>
++        <div id="isolatebar"><span class="tog" id="showall">show all</span></div>
+       </div>
+       <div id="bomscroll"><div id="bom"></div></div>
+     </aside>
+diff --git a/src/app/web/style.css b/src/app/web/style.css
+index c7dee69..200a09b 100644
+--- a/src/app/web/style.css
++++ b/src/app/web/style.css
+@@ -1,29 +1,62 @@
++/* The debug-viewer look — see docs/md-files/frontend-style.md.
++   Three greys and one accent; colour is reserved for identity, grey for unresolved. The
++   drawing dominates, so the sidebars stay narrow and everything else is chrome. */
+ * { box-sizing: border-box; }
+-/* Sidebar widths live here so JS resizes by setting ONE variable and CSS keeps ownership
+-   of the layout rules — there is exactly one place a width can come from. */
+-:root { --nav-w: 232px; --panel-w: 300px; }
++:root {
++  /* Sidebar widths live here so JS resizes by setting ONE variable and CSS keeps ownership
++     of the layout rules — there is exactly one place a width can come from. */
++  --nav-w: 232px; --panel-w: 300px;
++  --bg: #242424;          /* the area around the drawing */
++  --panel: #1a1a1a;       /* sidebar and toolbar */
++  --edge: #000;           /* panel border */
++  --line: #333;           /* internal rules, chips, hover */
++  --fg: #eee;             /* primary text */
++  --fg2: #aaa;            /* headings, metric lines */
++  --fg3: #888;            /* section labels */
++  --fg4: #666;            /* de-emphasised counts */
++  --selrow: #5a4a00;      /* dark amber — "selected" without competing with class colours */
++  --link: #4a9bff;        /* the only blue in the UI */
++  --ok: #4caf50;
++  --bad: #ff2d55;
++  --mono: ui-monospace, Menlo, monospace;
++}
+ html, body { margin: 0; height: 100%; }
+-body { font: 13px/1.4 -apple-system, system-ui, sans-serif; color: #1c1c1c; background: #e9e9ec;
++body { font: 13px/1.4 -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg);
+        display: flex; flex-direction: column; overflow: hidden; }
+-.mut { color: #888; }
++.mut { color: var(--fg3); }
+ .spacer { flex: 1; }
+ .hidden { display: none !important; }
+ 
+ header { display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+-         background: #202126; color: #eee; flex: 0 0 auto; }
++         background: var(--panel); color: var(--fg); flex: 0 0 auto;
++         border-bottom: 1px solid var(--edge); }
+ header strong { letter-spacing: .5px; }
+ header select, header button { font: inherit; }
+-header button { background: #3a3b42; color: #eee; border: 1px solid #55565e;
++header button { background: #2e2e2e; color: var(--fg); border: 1px solid #3d3d3d;
+                 border-radius: 5px; padding: 3px 10px; cursor: pointer; }
+-header button:hover { background: #47484f; }
+-header .sep { width: 1px; height: 20px; background: #444; }
+-.modes { display: flex; border: 1px solid #55565e; border-radius: 6px; overflow: hidden; }
++header button:hover { background: #3a3a3a; }
++header .sep { width: 1px; height: 20px; background: var(--line); }
++/* the metric line is numbers — monospace, so they line up as the drawing changes */
++#status { font-family: var(--mono); font-size: 11px; color: var(--fg2); }
++#curfile { color: var(--fg2); }
++.modes { display: flex; border: 1px solid #3d3d3d; border-radius: 6px; overflow: hidden; }
+ .modes button { border: none; border-radius: 0; }
+-.modes button.on { background: #4363d8; }
+-.chk { display: flex; align-items: center; gap: 4px; color: #cfcfd4; cursor: pointer; }
+-#export { background: #2f6f43; border-color: #2f6f43; }
+-#reset { background: #6b3a3a; border-color: #6b3a3a; }
+-#zlabel { min-width: 42px; text-align: center; }
++.modes button.on { background: #2f5bbf; }
++.chk { display: flex; align-items: center; gap: 4px; color: var(--fg2); cursor: pointer; }
++#export { background: #245c37; border-color: #245c37; }
++#reset { background: #5c2f2f; border-color: #5c2f2f; }
++
++/* Zoom as a typed integer, not only a pair of steppers. */
++.zoomwrap { display: flex; align-items: center; gap: 2px; }
++#zoomval { width: 46px; font: inherit; font-family: var(--mono); font-size: 12px;
++           text-align: right; background: #2e2e2e; color: var(--fg);
++           border: 1px solid #3d3d3d; border-radius: 5px; padding: 3px 4px; }
++#zoomval:focus { outline: none; border-color: var(--link); }
++/* the spinners duplicate the −/+ buttons and steal width from a 3-digit number */
++#zoomval::-webkit-inner-spin-button, #zoomval::-webkit-outer-spin-button {
++  -webkit-appearance: none; margin: 0; }
++#zoomval { -moz-appearance: textfield; }
++.zoomwrap .pct { color: var(--fg3); font-size: 11px; }
+ 
+ /* position:relative so a collapsed sidebar can peek as an absolute overlay (see .peek) */
+ main { flex: 1; display: flex; min-height: 0; position: relative; }
+@@ -33,34 +66,38 @@ main { flex: 1; display: flex; min-height: 0; position: relative; }
+    or BOM description overrides flex-basis and the sidebar silently grows — which is what
+    was stealing space from the drawing. With it, flex-basis is authoritative and the
+    existing ellipsis rules can actually do their job. */
+-#nav { flex: 0 0 var(--nav-w); background: #f2f2f5; border-right: 1px solid #d3d3d8;
++#nav { flex: 0 0 var(--nav-w); background: var(--panel); border-right: 1px solid var(--edge);
+        display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+-#navtop { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid #dcdce0; }
+-#navtop select { flex: 1; font: inherit; }
+-#navtop button { border: 1px solid #cbcbd2; background: #fff; border-radius: 5px; cursor: pointer; padding: 2px 8px; }
++#navtop { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
++#navtop select { flex: 1; font: inherit; background: #2e2e2e; color: var(--fg);
++                 border: 1px solid #3d3d3d; border-radius: 5px; padding: 2px 4px; }
++#navtop button { border: 1px solid #3d3d3d; background: #2e2e2e; color: var(--fg);
++                 border-radius: 5px; cursor: pointer; padding: 2px 8px; }
++#navtop button:hover { background: #3a3a3a; }
+ #tree { flex: 1; overflow: auto; padding: 6px 4px; min-width: 0; }
+ .cls { margin-bottom: 4px; }
+ .cls > .clshdr { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px;
+-                 font-weight: 600; color: #333; cursor: default; user-select: none; }
+-.cls > .clshdr:hover { background: #e6e6ea; }
+-.cls > .clshdr .caret { width: 12px; color: #888; font-size: 10px; }
++                 font-weight: 600; color: var(--fg2); cursor: default; user-select: none; }
++.cls > .clshdr:hover { background: var(--line); }
++.cls > .clshdr .caret { width: 12px; color: var(--fg4); font-size: 10px; }
+ .cls > .clshdr .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+-.cls > .clshdr .badge { color: #999; font-weight: 400; font-size: 11px; }
+-.cls.dragover > .clshdr { background: #d5e2ff; outline: 1px dashed #4363d8; }
++.cls > .clshdr .badge { color: var(--fg4); font-weight: 400; font-size: 11px;
++                        font-family: var(--mono); }
++.cls.dragover > .clshdr { background: #23324f; outline: 1px dashed var(--link); }
+ .cls.collapsed .pdfs { display: none; }
+ .pdfs { padding-left: 8px; }
+ .pdf { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px;
+-       font-size: 12px; color: #444; cursor: pointer; white-space: nowrap; overflow: hidden;
++       font-size: 12px; color: var(--fg2); cursor: pointer; white-space: nowrap; overflow: hidden;
+        text-overflow: ellipsis; }
+-.pdf:hover { background: #e6e6ea; }
+-.pdf.cur { background: #4363d8; color: #fff; }
++.pdf:hover { background: var(--line); }
++.pdf.cur { background: var(--selrow); color: var(--fg); }
+ .pdf.dragging { opacity: .4; }
+-.pdf .doc { color: #a33; }
+-.pdf.cur .doc { color: #fff; }
++.pdf .doc { color: var(--bad); }
++.pdf.cur .doc { color: #ffb3c1; }
+ 
+ #stage { flex: 1; overflow: auto; padding: 16px; }
+ #canvaswrap { position: relative; width: max-content; margin: 0 auto;
+-              box-shadow: 0 2px 12px rgba(0,0,0,.25); background: #fff; }
++              box-shadow: 0 2px 18px rgba(0,0,0,.5); background: #fff; }
+ #canvaswrap.addmode { cursor: crosshair; }
+ #pdf { display: block; }
+ #overlay { position: absolute; inset: 0; width: 100%; height: 100%;
+@@ -68,6 +105,8 @@ main { flex: 1; display: flex; min-height: 0; position: relative; }
+ #items rect, #items path { pointer-events: auto; }
+ #overlay.addmode #items { pointer-events: none; }
+ 
++/* The overlays sit on the WHITE page raster, not on the dark chrome, so their colours are
++   unchanged by the theme — only the panels went dark. */
+ /* `.hov` is driven from JS by the SAME nearest-hit test as clicking, so what lights up is
+    exactly what a click will take (a CSS :hover would only catch the one ~2px path literally
+    under the cursor, not the whole run). It only changes WEIGHT — never colour. */
+@@ -82,7 +121,7 @@ main { flex: 1; display: flex; min-height: 0; position: relative; }
+ /* the run being slid loses its colour entirely — colour == kept, grey == being cut.
+    (after .sel on purpose: a CSS stroke beats the inline stroke attribute, see coding_logs #42) */
+ .cable.sliding { stroke: #c3c3ca; opacity: .5; stroke-dasharray: none; }
+-.marquee { fill: rgba(67,99,216,.12); stroke: #4363d8; stroke-width: 1;
++.marquee { fill: rgba(74,155,255,.14); stroke: var(--link); stroke-width: 1;
+            vector-effect: non-scaling-stroke; stroke-dasharray: 4 3; }
+ .addprev { fill: rgba(47,111,67,.15); stroke: #2f6f43; stroke-width: 1.5;
+            vector-effect: non-scaling-stroke; }
+@@ -108,20 +147,20 @@ main { flex: 1; display: flex; min-height: 0; position: relative; }
+ 
+ /* panel: a FIXED head (title/view-switch/select-all) + an independently scrolling BOM list,
+    so a long list never pushes the head out of view. */
+-#panel { flex: 0 0 var(--panel-w); background: #f6f6f8; border-left: 1px solid #d3d3d8;
++#panel { flex: 0 0 var(--panel-w); background: var(--panel); border-left: 1px solid var(--edge);
+          display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+ 
+ /* ---------- sidebar splitters, collapse, and hover-peek ---------- */
+-.splitter { flex: 0 0 6px; position: relative; background: #e0e0e6; cursor: col-resize; }
+-.splitter:hover, .splitter.dragging { background: #4363d8; }
++.splitter { flex: 0 0 6px; position: relative; background: #141414; cursor: col-resize; }
++.splitter:hover, .splitter.dragging { background: var(--link); }
+ body.resizing { cursor: col-resize; user-select: none; }
+ /* the chevron is a button on top of the splitter — dragging alone isn't discoverable */
+ .splitter .grip { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                   width: 15px; height: 46px; padding: 0; z-index: 5;
+-                  border: 1px solid #cbcbd2; background: #fff; border-radius: 5px;
+-                  color: #777; font: 11px/1 -apple-system, system-ui, sans-serif;
++                  border: 1px solid #3d3d3d; background: #2e2e2e; border-radius: 5px;
++                  color: var(--fg3); font: 11px/1 -apple-system, system-ui, sans-serif;
+                   cursor: pointer; display: flex; align-items: center; justify-content: center; }
+-.splitter .grip:hover { background: #4363d8; border-color: #4363d8; color: #fff; }
++.splitter .grip:hover { background: var(--link); border-color: var(--link); color: #fff; }
+ 
+ /* Collapsed: the sidebar shrinks to a strip AND leaves the flex flow entirely; its 12px is
+    reserved by the adjacent splitter instead. Being out of flow already is the whole point —
+@@ -138,52 +177,73 @@ body.resizing { cursor: col-resize; user-select: none; }
+ 
+ /* Peek: hovering the strip floats the sidebar back out over the drawing. */
+ #nav.collapsed.peek, #panel.collapsed.peek {
+-  z-index: 40; overflow: visible; box-shadow: 0 2px 18px rgba(0,0,0,.28);
++  z-index: 40; overflow: visible; box-shadow: 0 2px 18px rgba(0,0,0,.5);
+ }
+ #nav.collapsed.peek { width: var(--nav-w); }
+ #panel.collapsed.peek { width: var(--panel-w); }
+ #nav.collapsed.peek > *, #panel.collapsed.peek > * { visibility: visible; }
+ #panelhead { flex: 0 0 auto; padding: 12px 12px 0; }
+-#panel h2 { font-size: 14px; margin: 2px 0 8px; }
+-#viewswitch { display: flex; border: 1px solid #cbcbd2; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+-#viewswitch button { flex: 1; font: inherit; border: none; background: #fff; color: #444; padding: 4px 8px; cursor: pointer; }
+-#viewswitch button:hover { background: #ececf0; }
+-#viewswitch button.on { background: #4363d8; color: #fff; }
+-#projinfo { font-size: 11px; margin-bottom: 8px; }
++#panel h2 { font-size: 13px; color: var(--fg2); font-weight: 600; margin: 2px 0 8px; }
++#viewswitch { display: flex; border: 1px solid #3d3d3d; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
++#viewswitch button { flex: 1; font: inherit; border: none; background: #2e2e2e; color: var(--fg2); padding: 4px 8px; cursor: pointer; }
++#viewswitch button:hover { background: #3a3a3a; }
++#viewswitch button.on { background: #2f5bbf; color: #fff; }
++#projinfo, #docinfo { font-size: 11px; margin-bottom: 8px; color: var(--fg4); }
++/* isolate is a text link, not a button — the doc's `.tog` */
++#isolatebar { margin-bottom: 6px; }
++.tog { font-size: 11px; color: var(--link); cursor: pointer; margin-right: 10px;
++       display: inline-block; }
++.tog:hover { text-decoration: underline; }
+ #bomscroll { flex: 1; overflow: auto; padding: 0 12px 12px; min-height: 0; }
+-.bomrow { display: flex; align-items: center; gap: 8px; padding: 6px 6px; border-radius: 6px;
+-          min-width: 0; }
+-.bomrow:hover { background: #ececf0; }
++
++/* The row is the unit of the sidebar: a 3px left stripe in the class colour is what ties it
++   to the geometry on the page. */
++.bomrow { display: flex; align-items: center; gap: 8px; padding: 6px 8px; margin-bottom: 3px;
++          border-radius: 0 5px 5px 0; border-left: 3px solid transparent;
++          min-width: 0; cursor: pointer; }
++.bomrow:hover { background: var(--line); }
++.bomrow.sel { background: var(--selrow); }
+ .bomrow:hover .addbtn { visibility: visible; }
+ .bomrow .sw { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 auto; }
+-/* the type's real geometry, as an inline SVG */
++/* the type's real geometry, as an inline SVG. White plate deliberately: the icons are the
++   drawing's own black-on-white geometry, and they vanish on a dark panel. */
+ .bomrow .icon { width: 26px; height: 26px; flex: 0 0 auto; display: block;
+-                background: #fff; border: 1px solid #e2e2e8; border-radius: 5px; padding: 1px; }
++                background: #fff; border: 1px solid #3d3d3d; border-radius: 5px; padding: 1px; }
+ .bomrow .lbl { flex: 1; overflow: hidden; min-width: 0; }
+-.bomrow .code { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
+-.bomrow .desc { color: #777; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+-.bomrow .addbtn { visibility: hidden; border: 1px solid #cbcbd2; background: #fff; color: #333;
++/* A chip is for a CODE — short, monospace, alignable. A type with no code carries its
++   description instead, and chipping a 60-character sentence produced a wrapped grey block
++   that dominated the row. Uncoded types get plain truncated text. */
++.bomrow .code { font-family: var(--mono); font-size: 11px; background: var(--line);
++                color: #ddd; padding: 1px 5px; border-radius: 3px;
++                display: inline-block; max-width: 100%; vertical-align: bottom;
++                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.bomrow .noco { display: block; color: var(--fg2); font-size: 11px;
++                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
++.bomrow .desc { color: var(--fg4); font-size: 11px; white-space: nowrap; overflow: hidden;
++                text-overflow: ellipsis; margin-top: 3px; }
++.bomrow .addbtn { visibility: hidden; border: 1px solid #3d3d3d; background: #2e2e2e; color: var(--fg2);
+                   border-radius: 5px; width: 22px; height: 22px; cursor: pointer; line-height: 1; }
+-.bomrow .addbtn:hover { background: #4363d8; color: #fff; border-color: #4363d8; }
+-.bomrow .cnt { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 26px; text-align: right; }
++.bomrow .addbtn:hover { background: var(--link); color: #fff; border-color: var(--link); }
++.bomrow .cnt { font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums;
++               min-width: 30px; text-align: right; color: var(--fg2); }
+ .bomrow.off { opacity: .4; }
+-.bomrow input[type=checkbox] { margin: 0; }
++.bomrow input[type=checkbox] { margin: 0; accent-color: var(--link); }
+ /* section header doubles as the show/hide-all control for everything under it */
+ .section { margin-top: 14px; font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
+-           color: #999; border-top: 1px solid #ddd; padding-top: 10px;
++           color: var(--fg3); border-top: 1px solid var(--line); padding-top: 10px;
+            display: flex; align-items: center; gap: 8px; }
+ .section.first { margin-top: 2px; border-top: none; padding-top: 0; }
+-.section input[type=checkbox] { margin: 0; cursor: pointer; }
++.section input[type=checkbox] { margin: 0; cursor: pointer; accent-color: var(--link); }
+ 
+ .floatbar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+-            background: #202126; color: #eee; border-radius: 10px; padding: 8px 12px;
+-            display: flex; align-items: center; gap: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.35);
+-            z-index: 20; }
+-.floatbar button, .floatbar select { font: inherit; background: #3a3b42; color: #eee;
+-            border: 1px solid #55565e; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+-.floatbar button:hover { background: #47484f; }
+-.floatbar button.danger { background: #8a2b2b; border-color: #8a2b2b; }
+-.floatbar button.primary { background: #2f6f43; border-color: #2f6f43; }
+-.floatbar .modes { border-color: #55565e; }
+-.floatbar .modes button.on { background: #4363d8; border-color: #4363d8; }
++            background: var(--panel); color: var(--fg); border-radius: 10px; padding: 8px 12px;
++            display: flex; align-items: center; gap: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.55);
++            border: 1px solid var(--line); z-index: 20; }
++.floatbar button, .floatbar select { font: inherit; background: #2e2e2e; color: var(--fg);
++            border: 1px solid #3d3d3d; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
++.floatbar button:hover { background: #3a3a3a; }
++.floatbar button.danger { background: #7a2431; border-color: #7a2431; }
++.floatbar button.primary { background: #245c37; border-color: #245c37; }
++.floatbar .modes { border-color: #3d3d3d; }
++.floatbar .modes button.on { background: #2f5bbf; border-color: #2f5bbf; }
+ #selinfo, #addselinfo { font-weight: 600; }
