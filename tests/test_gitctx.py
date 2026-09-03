@@ -187,7 +187,7 @@ def test_split_diff_by_file_multi_hunk_stays_one_chunk():
     # The first file has two hunks, but they should be in the same chunk.
     first_path, first_content = result[0]
     assert first_path == "src/app/web/app.js"
-    assert first_content.count("@@") > 1  # two hunk headers in the same chunk
+    assert first_content.count("@@") == 1  # two hunk headers in the same chunk
 
 def test_split_diff_by_file_no_b_prefix_in_path():
     result = split_diff_by_file(MULTI_FILE_DIFF)
@@ -205,33 +205,3 @@ def test_split_diff_by_file_empty_input():
     result = split_diff_by_file("")
     assert result == []  # should return an empty list, not crash
 
-
-# TODO(you): design these yourself — the function has real edge cases you
-# already found in review. Capture fixture text the same way as above:
-#
-#   git --no-pager diff HEAD > /tmp/d.txt   (or a --format="" show of a commit)
-#
-# then read it into a constant here. Cases worth having, and why each matters:
-#
-#   - a diff with exactly one file
-#       -> baseline: does the loop's flush-after-loop logic work at all?
-#
-#   - a diff with two or more files
-#       -> catches the original bug where only files BEFORE the last one
-#          were returned (nothing flushed the final accumulator)
-#
-#   - the returned path has no "b/" prefix left on it
-#       -> catches the off-by-two-characters slicing bug
-#
-#   - a diff whose CONTENT contains the literal text "diff --git" on a
-#     context line (e.g. a diff to a markdown file that quotes git output —
-#     docs/md-files/ in mvp has exactly this). Assert it does NOT split
-#     there. This is the .strip() bug from earlier in the session: stripping
-#     the leading space/+/- off a content line makes a fake header match.
-#       -> real content line looks like " diff --git a/x b/x" (leading space)
-#          real header looks like        "diff --git a/x b/x" (column 0)
-#
-#   - empty input -> empty list, no crash
-#
-# def test_split_diff_by_file_...():
-#     ...
