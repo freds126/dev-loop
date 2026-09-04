@@ -56,3 +56,46 @@ def test_current_branch_raises_on_non_repo(tmp_path):
     with pytest.raises(RuntimeError) as exc_info:
         current_branch(tmp_path)
     assert "not a git repository" in str(exc_info.value).lower()
+
+# --------------------------------------------------------- test merge_base
+from agentic.gitctx import merge_base
+
+def test_merge_base_with_common_ancestor(make_repo):
+    repo = make_repo("repo")
+    subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature"], check=True)
+    (repo / "feature.txt").write_text("feature\n")
+    subprocess.run(["git", "-C", str(repo), "add", "feature.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "add feature"], check=True)
+
+    base = merge_base(repo, "main")
+    assert base is not None
+    assert _run_git(repo, "rev-parse", base).strip() == _run_git(repo, "rev-parse", "HEAD~1").strip()
+
+def test_merge_base_with_common_ancestor_with_commits_ahead_of_fork_point(make_repo):
+    repo = make_repo("repo")
+    fork_point = _run_git(repo, "rev-parse", "HEAD").strip()
+
+    subprocess.run(["git", "-C", str(repo), "checkout", "-b", "feature"], check=True)
+    (repo / "feature.txt").write_text("feature\n")
+    subprocess.run(["git", "-C", str(repo), "add", "feature.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "add feature"], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "main"], check=True)
+    (repo / "main.txt").write_text("main new commit\n")
+    subprocess.run(["git", "-C", str(repo), "add", "main.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "add main commit"], check=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "feature"], check=True)
+
+    base = merge_base(repo, "main")
+    assert base is not None
+    assert base == fork_point
+
+def test_merge_base_raises_on_non_repo(tmp_path):
+    with pytest.raises(RuntimeError) as exc_info:
+        merge_base(tmp_path, "main")
+    assert "not a git repository" in str(exc_info.value).lower()
+
+def test_merge_base_raises_on_nonexistent_branch(make_repo):
+    repo = make_repo("repo")
+    with pytest.raises(RuntimeError) as exc_info:
+        merge_base(repo, "nonexistent-branch")
+    assert "not a valid object name nonexistent-branch" in str(exc_info.value).lower()

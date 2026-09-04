@@ -261,12 +261,9 @@ def merge_base(repo_path: Path, base_ref: str) -> str:
     This — not base_ref itself — is what you diff against, so that commits made
     on main after you branched don't show up inverted as if you had deleted them.
 
-    DECISION: what should happen in a repo where base_ref does not exist (a fresh
-    repo, or a branch cut from something other than main)? git exits non-zero.
-    Falling back to HEAD would mean "diff the working tree only" — reasonable,
-    but it must be a choice, not an accident.
+    If base_ref is not an ancestor of HEAD it will raise an error. 
     """
-    raise NotImplementedError
+    return _run_git(repo_path, "merge-base", "HEAD", base_ref).strip()
 
 
 def unreviewed_paths(repo_path: Path) -> list[str]:
