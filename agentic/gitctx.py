@@ -201,14 +201,31 @@ def truncate_diff(diff: str, max_chars: int) -> tuple[str, list[str]]:
     complete to the model, which will then reason confidently about half a
     function.
 
-    Returning the dropped paths is the point: the caller must be able to tell
-    the reviewer exactly which files it did not see.
+    The returned dropped_paths list is for the caller to report to the user.
 
-    DECISION: which files get dropped first when the budget is tight? Largest
-    first keeps the most files visible; source order is more predictable. Either
-    is fine — decide, don't default.
+    We iterate over chunks in source order, and skip files that take us over the 
+    max_chars limit. This means the first files in the diff are more likely to be kept,
+    and later files are more likely to be dropped if the budget is exceeded.
+
+    This means the order of files in the diff matters. If we overflow the budget,
+    we skip, but a smaller file later will be kept if it fits in budget.
     """
-    raise NotImplementedError
+
+    chunks = split_diff_by_file(diff)
+    kept_chunks = []
+    dropped_paths = []
+    current_length = 0
+
+    # iterate in source order, skipping over files that are too large
+    for path, chunk in chunks:
+        chunk_length = len(chunk)
+        current_length += chunk_length
+        if current_length <= max_chars:
+            kept_chunks.append(chunk)
+        else:
+            dropped_paths.append(path)
+            current_length -= chunk_length  # Remove the length of the dropped chunk
+    return "\n".join(kept_chunks), dropped_paths
 
 
 # --------------------------------------------------------------------- SHELL
