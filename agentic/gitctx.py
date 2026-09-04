@@ -276,7 +276,8 @@ def unreviewed_paths(repo_path: Path) -> list[str]:
     The tool never stages anything, so these files genuinely will not be
     reviewed. Returning them is how the caller avoids lying about coverage.
     """
-    raise NotImplementedError
+    result = _run_git(repo_path, "status", "--porcelain", "-uall").splitlines()
+    return [line[3:] for line in result if line.startswith("?? ")]
 
 
 def inspect_repository(

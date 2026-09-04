@@ -99,3 +99,42 @@ def test_merge_base_raises_on_nonexistent_branch(make_repo):
     with pytest.raises(RuntimeError) as exc_info:
         merge_base(repo, "nonexistent-branch")
     assert "not a valid object name nonexistent-branch" in str(exc_info.value).lower()
+
+# --------------------------------------------------------- unreviewed_paths
+from agentic.gitctx import unreviewed_paths
+
+def test_unreviewed_paths_with_untracked_and_modified_files(make_repo):
+    repo = make_repo("repo")
+    # Create an untracked file
+    (repo / "untracked.txt").write_text("untracked\n")
+    # Modify a tracked file
+    (repo / "hello.txt").write_text("modified hello\n")
+
+    unreviewed = unreviewed_paths(repo)
+    assert "untracked.txt" in unreviewed
+    assert "hello.txt" not in unreviewed
+
+def test_unreviewed_paths_expands_untracked_directory(make_repo):
+    repo = make_repo("repo")
+    (repo / "newdir").mkdir()
+    (repo / "newdir" / "a.py").write_text("a\n")
+    (repo / "newdir" / "b.py").write_text("b\n")
+
+    unreviewed = unreviewed_paths(repo)
+    assert "newdir/a.py" in unreviewed
+    assert "newdir/b.py" in unreviewed
+    assert not any(p == "newdir/" for p in unreviewed)  # not collapsed
+
+def test_unreviewed_paths_respects_gitignore(make_repo):
+    repo = make_repo("repo")
+    (repo / ".gitignore").write_text("ignored.txt\n")
+    (repo / "ignored.txt").write_text("secret\n")
+    (repo / "visible.txt").write_text("hi\n")
+
+    unreviewed = unreviewed_paths(repo)
+    assert "visible.txt" in unreviewed
+    assert "ignored.txt" not in unreviewed
+
+def test_unreviewed_paths_nothing_untracked(make_repo):
+    repo = make_repo("repo")
+    assert unreviewed_paths(repo) == []
