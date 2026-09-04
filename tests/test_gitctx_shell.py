@@ -36,7 +36,7 @@ def test_run_git_wrong_command(make_repo):
     git_repo = make_repo("repo")
     with pytest.raises(RuntimeError) as exc_info:
         _run_git(git_repo, "nonexistent-command")
-    assert "git: 'nonexistent-command' is not a git command. See 'git --help'." in str(exc_info.value).lower()
+    assert "not a git command" in str(exc_info.value).lower()
 
 def test_run_git_uses_repo_path_not_cwd(make_repo):
     repo_a = make_repo("repo_a", branch="branch-a")
