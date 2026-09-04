@@ -242,7 +242,12 @@ def _run_git(repo_path: Path, *args: str) -> str:
     Every other function in this section goes through here. That keeps the
     -C rule and the error handling in exactly one place.
     """
-    raise NotImplementedError
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), *args],capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Git command failed: {' '.join(args)}\n{result.stderr}")
+    return result.stdout
 
 
 def current_branch(repo_path: Path) -> str:
@@ -298,3 +303,6 @@ def inspect_repository(
     "this is the change I want reviewed."
     """
     raise NotImplementedError
+
+if __name__ == "__main__":
+    print(_run_git(Path("/tmp"), "status"))
