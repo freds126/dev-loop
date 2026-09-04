@@ -10,6 +10,8 @@ SHELL functions (_run_git, current_branch, merge_base, unreviewed_paths,
 inspect_repository) are not covered here yet — they need a real repo fixture.
 Add tests/test_gitctx_shell.py with a tmp_path git repo when you get there.
 """
+from sys import path
+
 import pytest
 
 from agentic.gitctx import (
@@ -20,6 +22,7 @@ from agentic.gitctx import (
     parse_namestatus,
     join_changed_files,
     split_diff_by_file,
+    truncate_diff,
 )
 
 
@@ -205,33 +208,53 @@ def test_split_diff_by_file_empty_input():
     result = split_diff_by_file("")
     assert result == []  # should return an empty list, not crash
 
+# --------------------------------------------------------- truncate_diff
 
-# TODO(you): design these yourself — the function has real edge cases you
-# already found in review. Capture fixture text the same way as above:
-#
-#   git --no-pager diff HEAD > /tmp/d.txt   (or a --format="" show of a commit)
-#
-# then read it into a constant here. Cases worth having, and why each matters:
-#
-#   - a diff with exactly one file
-#       -> baseline: does the loop's flush-after-loop logic work at all?
-#
-#   - a diff with two or more files
-#       -> catches the original bug where only files BEFORE the last one
-#          were returned (nothing flushed the final accumulator)
-#
-#   - the returned path has no "b/" prefix left on it
-#       -> catches the off-by-two-characters slicing bug
-#
-#   - a diff whose CONTENT contains the literal text "diff --git" on a
-#     context line (e.g. a diff to a markdown file that quotes git output —
-#     docs/md-files/ in mvp has exactly this). Assert it does NOT split
-#     there. This is the .strip() bug from earlier in the session: stripping
-#     the leading space/+/- off a content line makes a fake header match.
-#       -> real content line looks like " diff --git a/x b/x" (leading space)
-#          real header looks like        "diff --git a/x b/x" (column 0)
-#
-#   - empty input -> empty list, no crash
-#
-# def test_split_diff_by_file_...():
-#     ...
+def test_truncate_diff_preserves_small_file():
+    small_diff = "diff --git a/file2.txt b/file1.txt\n+Hello World\n"
+    kept, dropped = truncate_diff(small_diff, max_chars=1000)
+    assert kept == small_diff.strip()  # nothing dropped
+    assert dropped == []  # nothing dropped
+
+def test_truncate_diff_skip_and_continue():
+    # This test checks that the truncation logic correctly skips a file that
+    # would exceed the max_chars limit and continues to the next file.
+    small_diff = "diff --git a/file1.txt b/file1.txt\n+Line 1\n"
+    large_diff = "diff --git a/file2.txt b/file2.txt\n+Line 2\nthis is a large diff with many chars and stuff that should exceed the limit\n"
+    another_small_diff = "diff --git a/file3.txt b/file3.txt\n+Line 3\n"
+    diff = small_diff + large_diff + another_small_diff
+    kept, dropped = truncate_diff(diff, max_chars=len(small_diff + another_small_diff) + 5)
+    assert "file1.txt" in kept
+    assert "file2.txt" not in kept  # should be dropped due to size
+    assert "file3.txt" in kept  # should still be included
+    assert "file2.txt" in dropped  # should be in the dropped list
+
+def test_truncate_diff_exact_limit():
+    # This test checks that a file that exactly matches the max_chars limit is kept.
+    exact_diff = "diff --git a/file1.txt b/file1.txt\n+Line 1\n"
+    kept, dropped = truncate_diff(exact_diff, max_chars=len(exact_diff))
+    assert kept == exact_diff.strip()  # should be kept
+    assert dropped == []  # nothing dropped
+
+def test_truncate_diff_every_file_dropped():
+    # This test checks that if every file exceeds the max_chars limit, all are dropped.
+    large_diff1 = "diff --git a/file1.txt b/file1.txt\n+Line 1\nthis is a large diff with many chars and stuff that should exceed the limit\n"
+    large_diff2 = "diff --git a/file2.txt b/file2.txt\n+Line 2\nthis is another large diff with many chars and stuff that should exceed the limit\n"
+    diff = large_diff1 + large_diff2
+    kept, dropped = truncate_diff(diff, max_chars=10)  # very small limit
+    assert kept == ""  # nothing kept
+    assert len(dropped) == 2  # both files dropped
+    assert "file1.txt" in dropped[0]
+    assert "file2.txt" in dropped[1]
+
+def test_truncate_diff_handles_empty_input():
+    kept, dropped = truncate_diff("", max_chars=100)
+    assert kept == ""
+    assert dropped == []
+
+def test_truncate_diff_handles_no_diff_lines():
+    # This test checks that if the diff has no "diff --git" lines, it is treated as a single chunk and either kept or dropped based on size.
+    diff = "+Line 1\n+Line 2\n" 
+    kept, dropped = truncate_diff(diff, max_chars=100)
+    assert kept == diff.strip()
+    assert dropped == []
