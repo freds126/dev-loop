@@ -44,3 +44,15 @@ def test_run_git_uses_repo_path_not_cwd(make_repo):
 
     assert _run_git(repo_a, "rev-parse", "--abbrev-ref", "HEAD").strip() == "branch-a"
     assert _run_git(repo_b, "rev-parse", "--abbrev-ref", "HEAD").strip() == "branch-b"
+
+# --------------------------------------------------------- test current_branch
+from agentic.gitctx import current_branch
+
+def test_current_branch(make_repo):
+    repo = make_repo("repo", branch="test-branch")
+    assert current_branch(repo) == "test-branch"
+
+def test_current_branch_raises_on_non_repo(tmp_path):
+    with pytest.raises(RuntimeError) as exc_info:
+        current_branch(tmp_path)
+    assert "not a git repository" in str(exc_info.value).lower()

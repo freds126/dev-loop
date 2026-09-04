@@ -241,7 +241,7 @@ def _run_git(repo_path: Path, *args: str) -> str:
 
     Every other function in this section goes through here. That keeps the
     -C rule and the error handling in exactly one place.
-    """
+    """ 
     result = subprocess.run(
         ["git", "-C", str(repo_path), *args],capture_output=True, text=True
     )
@@ -252,7 +252,7 @@ def _run_git(repo_path: Path, *args: str) -> str:
 
 def current_branch(repo_path: Path) -> str:
     """Name of the checked-out branch. `rev-parse --abbrev-ref HEAD`."""
-    raise NotImplementedError
+    return _run_git(repo_path, "rev-parse", "--abbrev-ref", "HEAD").strip()
 
 
 def merge_base(repo_path: Path, base_ref: str) -> str:
