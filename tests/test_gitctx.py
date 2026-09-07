@@ -10,8 +10,6 @@ SHELL functions (_run_git, current_branch, merge_base, unreviewed_paths,
 inspect_repository) are not covered here yet — they need a real repo fixture.
 Add tests/test_gitctx_shell.py with a tmp_path git repo when you get there.
 """
-from sys import path
-
 import pytest
 
 from agentic.gitctx import (

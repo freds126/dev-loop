@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="1" skipped="0" tests="3" time="0.085" timestamp="2026-09-07T16:23:11.888552+02:00" hostname="MacBookAir"><testcase classname="test_demo" name="test_this_passes" time="0.001" /><testcase classname="test_demo" name="test_this_fails" time="0.001"><failure message="AssertionError: one is not two, obviously&#10;assert 1 == 2">def test_this_fails():
+&gt;       assert 1 == 2, "one is not two, obviously"
+E       AssertionError: one is not two, obviously
+E       assert 1 == 2
+
+/tmp/xml-scratch/test_demo.py:7: AssertionError</failure></testcase><testcase classname="test_demo" name="test_this_errors" time="0.001"><error message="failed on setup with &quot;RuntimeError: fixture setup blew up&quot;">@pytest.fixture
+    def broken_fixture():
+&gt;       raise RuntimeError("fixture setup blew up")
+E       RuntimeError: fixture setup blew up
+
+/tmp/xml-scratch/test_demo.py:11: RuntimeError</error></testcase></testsuite></testsuites>
