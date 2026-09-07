@@ -46,19 +46,17 @@ class RepoContext:
     diff: str
     changed_files: list[ChangedFile]
     truncated: bool
+    dropped_paths: list[str]
+    unreviewed_paths: list[str]
 
-    # DECISION still open: `truncated: bool` says *that* something was cut but
-    # not *what*. A reviewer told "truncated: true" cannot know which files it
-    # never saw. Consider replacing/supplementing with the dropped paths.
-    #
-    # DECISION still open: where do untracked files go? You established git can
-    # list them (and applies .gitignore for you). Right now nothing in this
-    # structure tells a caller that src/core/canon/ exists and was not reviewed.
+    # Truncated bool says wether or not any file diff was dropped.
+    # dropped paths contain the paths of the dropped files, 
+    # so the caller can report them to the user. The diff is always the truncated version, 
+    # so the caller can pass it to a model without worrying about exceeding its context window.
+    # unreviewed paths are the paths of untracked files that will not be reviewed, so the caller can report them to the user as well.
 
 
 # ---------------------------------------------------------------------- CORE
-# Pure functions. No subprocess, no filesystem. Every one of these should be
-# testable by pasting a string you copied out of your terminal.
 
 def parse_numstat_line(git_numstat_output_line: str) -> tuple[int | None, int | None, str]:
     parts = git_numstat_output_line.strip().split('\t')
@@ -241,13 +239,18 @@ def _run_git(repo_path: Path, *args: str) -> str:
 
     Every other function in this section goes through here. That keeps the
     -C rule and the error handling in exactly one place.
-    """
-    raise NotImplementedError
+    """ 
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), *args],capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Git command failed: {' '.join(args)}\n{result.stderr}")
+    return result.stdout
 
 
 def current_branch(repo_path: Path) -> str:
     """Name of the checked-out branch. `rev-parse --abbrev-ref HEAD`."""
-    raise NotImplementedError
+    return _run_git(repo_path, "rev-parse", "--abbrev-ref", "HEAD").strip()
 
 
 def merge_base(repo_path: Path, base_ref: str) -> str:
@@ -256,25 +259,23 @@ def merge_base(repo_path: Path, base_ref: str) -> str:
     This — not base_ref itself — is what you diff against, so that commits made
     on main after you branched don't show up inverted as if you had deleted them.
 
-    DECISION: what should happen in a repo where base_ref does not exist (a fresh
-    repo, or a branch cut from something other than main)? git exits non-zero.
-    Falling back to HEAD would mean "diff the working tree only" — reasonable,
-    but it must be a choice, not an accident.
+    If base_ref is not an ancestor of HEAD it will raise an error. 
     """
-    raise NotImplementedError
+    return _run_git(repo_path, "merge-base", "HEAD", base_ref).strip()
 
 
 def unreviewed_paths(repo_path: Path) -> list[str]:
     """Paths git knows about but that the diff will not cover — untracked files.
 
     `status --porcelain` collapses an untracked directory to one entry with a
-    trailing slash; the flag you found expands it to individual files, and git
+    trailing slash; the flag -uall expands it to individual files, and git
     applies .gitignore for you (a hand-rolled os.walk would not).
 
     The tool never stages anything, so these files genuinely will not be
     reviewed. Returning them is how the caller avoids lying about coverage.
     """
-    raise NotImplementedError
+    result = _run_git(repo_path, "status", "--porcelain", "-uall").splitlines()
+    return [line[3:] for line in result if line.startswith("?? ")]
 
 
 def inspect_repository(
@@ -284,17 +285,38 @@ def inspect_repository(
 ) -> RepoContext:
     """Assemble the full picture of what changed in `repo_path`.
 
-    Wiring only — every decision has already been made in the functions above:
-      1. resolve the base commit
-      2. collect numstat and name-status output, parse and join them
-      3. collect the unified diff, truncate it to budget
-      4. collect the paths that will not be reviewed
-      5. build the RepoContext
+    Inspect the repository relative to the merge base with the current branch.
 
-    DECISION: which comparison means "what I want reviewed"? Committed work
-    against the merge-base, the uncommitted working tree, or both? Note that
-    when Claude Code finishes a task the changes are usually still uncommitted,
-    and that you decided `git add` should be the deliberate act that says
-    "this is the change I want reviewed."
+    All tracked changes since the base commit are included in the review context,
+    regardless of whether they are committed, staged, or unstaged. Untracked files
+    are reported separately as unreviewed paths.
+
+    The diff is truncated to the configured context budget without splitting
+    individual file diffs.
     """
-    raise NotImplementedError
+    base_commit = merge_base(repo_path, base_ref)
+
+    numstat_diff = _run_git(repo_path, "diff", "--numstat", base_commit)
+    namestatus_diff = _run_git(repo_path, "diff", "--name-status", base_commit)
+
+    numstat = parse_numstat(numstat_diff)
+    namestatus = parse_namestatus(namestatus_diff)
+    changed_files = join_changed_files(numstat, namestatus)
+
+    git_diff = _run_git(repo_path, "diff", base_commit)
+    truncated_diff, dropped_paths = truncate_diff(git_diff, max_chars)
+
+    unreviewed = unreviewed_paths(repo_path)
+
+    return RepoContext(
+        base=base_commit,
+        diff=truncated_diff,
+        changed_files=changed_files,
+        truncated=bool(dropped_paths),
+        dropped_paths=dropped_paths,
+        unreviewed_paths=unreviewed,
+    )
+
+
+if __name__ == "__main__":
+    print(_run_git(Path("/tmp"), "status"))
