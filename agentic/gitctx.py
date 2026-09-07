@@ -14,14 +14,6 @@ Rules this module holds to:
   - subprocess.run with an argument list, never shell=True.
   - Non-zero exit raises. A failure must never look like an empty result.
   - Never truncate a diff mid-hunk, and always say what was dropped.
-
-KNOWN BUGS to fix in the three functions below (from review):
-  1. `.split('\t').strip()` is backwards in both line parsers — split returns a
-     list, which has no .strip(). Strip the string first, then split.
-  2. In parse_numstat_line, `path` is assigned only inside the else branch, so
-     binary lines raise UnboundLocalError. Only the counts vary between branches.
-  3. parse_numstat_line's annotation still says tuple[int, int, str] but it can
-     now return None for the counts.
 """
 from __future__ import annotations
 
@@ -47,7 +39,7 @@ class RepoContext:
     changed_files: list[ChangedFile]
     truncated: bool
     dropped_paths: list[str]
-    unreviewed_paths: list[str]
+    unreviewed: list[str]
 
     # Truncated bool says wether or not any file diff was dropped.
     # dropped paths contain the paths of the dropped files, 
@@ -83,18 +75,6 @@ def parse_namestatus_line(git_namestatus_output_line: str) -> tuple[str, str]:
     path = parts[-1]  # The last part is always the new path, even for renames
     return status, path
 
-
-# def create_changed_file(numstat_line: str, namestatus_line: str) -> ChangedFile:
-#     added, removed, path_from_numstat = parse_numstat_line(numstat_line)
-#     status, path_from_namestatus = parse_namestatus_line(namestatus_line)
-
-#     # Ensure that the paths match
-#     if path_from_numstat != path_from_namestatus:
-#         raise ValueError(f"Path mismatch between numstat and namestatus lines: {path_from_numstat} vs {path_from_namestatus}")
-
-#     return ChangedFile(path=path_from_numstat, status=status, added=added, removed=removed)
-
-
 def parse_numstat(output: str) -> dict[str, tuple[int | None, int | None]]:
     """Parse the whole output of `git diff --numstat` into {path: (added, removed)}.
 
@@ -129,7 +109,7 @@ def parse_namestatus(output: str) -> dict[str, str]:
     That means the added and removed fields for a renamed file are None, None, but can be derived from the status if needed. 
     The ChangedFile will have the new path and the status indicating it was renamed. 
     """
-    if output == None:
+    if output is None:
         return {}
 
     lines = output.strip().splitlines()
@@ -227,8 +207,6 @@ def truncate_diff(diff: str, max_chars: int) -> tuple[str, list[str]]:
 
 
 # --------------------------------------------------------------------- SHELL
-# Runs git. Keep these thin: capture output, hand it to the core, and turn
-# failures into errors that name what went wrong.
 
 def _run_git(repo_path: Path, *args: str) -> str:
     """Run `git -C <repo_path> <args...>` and return stdout.
@@ -241,7 +219,7 @@ def _run_git(repo_path: Path, *args: str) -> str:
     -C rule and the error handling in exactly one place.
     """ 
     result = subprocess.run(
-        ["git", "-C", str(repo_path), *args],capture_output=True, text=True
+        ["git", "-C", str(repo_path), *args], capture_output=True, text=True
     )
     if result.returncode != 0:
         raise RuntimeError(f"Git command failed: {' '.join(args)}\n{result.stderr}")
@@ -314,9 +292,5 @@ def inspect_repository(
         changed_files=changed_files,
         truncated=bool(dropped_paths),
         dropped_paths=dropped_paths,
-        unreviewed_paths=unreviewed,
+        unreviewed=unreviewed,
     )
-
-
-if __name__ == "__main__":
-    print(_run_git(Path("/tmp"), "status"))

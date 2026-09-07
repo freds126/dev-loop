@@ -151,14 +151,14 @@ def test_inspect_repository_with_changes(make_repo):
     assert any(cf.path == "hello.txt" and cf.status == "M" for cf in result.changed_files)
     assert not result.truncated
     assert result.dropped_paths == []
-    assert result.unreviewed_paths == []
+    assert result.unreviewed == []
 
 def test_inspect_repository_with_untracked_files(make_repo):
     repo = make_repo("repo")
     (repo / "untracked.txt").write_text("untracked\n")
 
     result = inspect_repository(repo)
-    assert "untracked.txt" in result.unreviewed_paths
+    assert "untracked.txt" in result.unreviewed
     assert not result.truncated
     assert result.dropped_paths == []
 
@@ -172,7 +172,7 @@ def test_inspect_repository_with_truncated_diff(make_repo):
     result = inspect_repository(repo)
     assert result.truncated
     assert len(result.dropped_paths) > 0
-    assert result.unreviewed_paths == []
+    assert result.unreviewed == []
 
 def test_inspect_repository_with_untracked_and_truncated(make_repo):
     repo = make_repo("repo")
@@ -186,7 +186,7 @@ def test_inspect_repository_with_untracked_and_truncated(make_repo):
     result = inspect_repository(repo)
     assert result.truncated
     assert len(result.dropped_paths) > 0
-    assert "untracked.txt" in result.unreviewed_paths
+    assert "untracked.txt" in result.unreviewed
 
 def test_inspect_repository_with_no_changes(make_repo):
     repo = make_repo("repo")
@@ -194,7 +194,7 @@ def test_inspect_repository_with_no_changes(make_repo):
     assert result.changed_files == []
     assert not result.truncated
     assert result.dropped_paths == []
-    assert result.unreviewed_paths == []
+    assert result.unreviewed == []
 
 def test_inspect_repository_with_untracked_directory(make_repo):
     repo = make_repo("repo")
@@ -203,9 +203,9 @@ def test_inspect_repository_with_untracked_directory(make_repo):
     (repo / "newdir" / "b.py").write_text("b\n")
 
     result = inspect_repository(repo)
-    assert "newdir/a.py" in result.unreviewed_paths
-    assert "newdir/b.py" in result.unreviewed_paths
-    assert not any(p == "newdir/" for p in result.unreviewed_paths)  # not collapsed
+    assert "newdir/a.py" in result.unreviewed
+    assert "newdir/b.py" in result.unreviewed
+    assert not any(p == "newdir/" for p in result.unreviewed)  # not collapsed
 
 def test_inspect_repository_with_gitignored_untracked(make_repo):
     repo = make_repo("repo")
@@ -214,8 +214,8 @@ def test_inspect_repository_with_gitignored_untracked(make_repo):
     (repo / "visible.txt").write_text("hi\n")
 
     result = inspect_repository(repo)
-    assert "visible.txt" in result.unreviewed_paths
-    assert "ignored.txt" not in result.unreviewed_paths
+    assert "visible.txt" in result.unreviewed
+    assert "ignored.txt" not in result.unreviewed
 
 def test_inspect_repository_with_untracked_and_modified(make_repo):
     repo = make_repo("repo")
@@ -225,7 +225,7 @@ def test_inspect_repository_with_untracked_and_modified(make_repo):
 
     result = inspect_repository(repo)
     assert any(cf.path == "hello.txt" and cf.status == "M" for cf in result.changed_files)
-    assert "untracked.txt" in result.unreviewed_paths
+    assert "untracked.txt" in result.unreviewed
     assert not result.truncated
     assert result.dropped_paths == []
 
@@ -254,7 +254,7 @@ def test_inspect_repository_detects_unstaged_modification(make_repo):
     assert modified.status == "M"
     assert modified.added == 1
     assert modified.removed == 1
-    assert result.unreviewed_paths == []
+    assert result.unreviewed == []
 
 
 def test_inspect_repository_detects_added_file(make_repo):
