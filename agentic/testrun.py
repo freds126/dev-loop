@@ -36,32 +36,86 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 import xml.etree.ElementTree as ET
 
 # ---------------------------------------------------------------- data types
 
+TestStatus = Literal["passed", "failed", "errored", "skipped"]
+# String literal union, not an enum — matches the convention already used in mvp's
+# own CLAUDE.md. Four outcomes, CONFIRMED against real pytest JUnit output this
+# session (not three — a raised exception inside a test body is "failed", not
+# "errored"; only a fixture setup/teardown failure produces a real "errored").
+
+
 @dataclass(frozen=True)
-class TestFailure:
-    name: str       # e.g. "tests/test_foo.py::test_bar", or a bare file path
-                    # for a collection-time error that never reached individual tests
-    message: str    # the assertion/error text, for a human or the tester agent to read
+class Test:
+    __test__ = False   # pytest collects classes named Test* by default; this isn't one
+
+    name: str            # "classname::name", pytest's own node-id join
+    status: TestStatus
+    message: str = ""    # empty for a pass; assertion/error text for fail/error;
+                          # skip reason for a skip. Optional because only some
+                          # statuses have anything meaningful to say.
 
 
 @dataclass(frozen=True)
 class TestResults:
-    total: int
-    passed: int
-    failed: int
-    errored: int
-    failures: list[TestFailure]   # one entry per failed OR errored test
+    """Redesigned mid-session: this used to be five separate int counters plus
+    two separate name-collections (`failures`, `all_names`), each populated by
+    its own branch in the parser. Every bug found in this module so far — a
+    passing test's name silently discarded, a skipped test miscounted as
+    passed, a skipped test's name wrongly kept in the verdict set — came from
+    the SAME root cause: fragmenting one underlying fact (what happened to
+    each testcase) across multiple hand-synchronized structures.
+
+    One list, one record type, ONE thing to do per testcase (append), and
+    everything else below is a filter over it. There is no longer a "did I
+    remember to also update X" question anywhere in the parser.
+    """
+    __test__ = False   # pytest collects classes named Test* by default; this isn't one
+
+    tests: list[Test]   # one entry per <testcase> observed, unconditionally —
+                         # no branch in the parser should ever skip appending one
+
+    @property
+    def total(self) -> int:
+        return len(self.tests)
+
+    @property
+    def passed(self) -> int:
+        return sum(1 for t in self.tests if t.status == "passed")
+
+    @property
+    def failed(self) -> int:
+        return sum(1 for t in self.tests if t.status == "failed")
+
+    @property
+    def errored(self) -> int:
+        return sum(1 for t in self.tests if t.status == "errored")
+
+    @property
+    def skipped(self) -> int:
+        return sum(1 for t in self.tests if t.status == "skipped")
+
+    @property
+    def failures(self) -> list[Test]:
+        """Failed or errored entries — what a human/tester agent would want to read."""
+        return [t for t in self.tests if t.status in ("failed", "errored")]
 
     @property
     def failing_names(self) -> frozenset[str]:
-        """Derived, not stored — same reasoning as ChangedFile.is_binary in gitctx.py.
-        A name appearing here twice (stored separately from `failures`) is a second
-        copy of the same fact that could drift out of sync; compute it instead.
+        return frozenset(t.name for t in self.tests if t.status in ("failed", "errored"))
+
+    @property
+    def all_names(self) -> frozenset[str]:
+        """Tests that reached a DEFINITE verdict this run — passed, failed, or
+        errored. Deliberately EXCLUDES skipped: a skip means no verdict was
+        reached, which for baseline purposes is functionally identical to
+        "didn't run at all." This is what lets compare_to_baseline distinguish
+        a genuine fix from a vanished-or-skipped test — see its docstring.
         """
-        return frozenset(f.name for f in self.failures)
+        return frozenset(t.name for t in self.tests if t.status != "skipped")
 
 
 @dataclass(frozen=True)
@@ -94,52 +148,62 @@ def parse_junit_xml(xml_text: str) -> TestResults:
 
     Use the stdlib `xml.etree.ElementTree` — no new dependency needed for this.
 
-    The JUnit format: a <testsuite> root (or <testsuites> wrapping one or more)
-    with `tests`, `failures`, `errors` counts as attributes, and one <testcase>
-    child per test. A failed testcase contains a <failure> child; an errored one
-    contains an <error> child; a passed one contains neither. `passed` isn't an
-    attribute on the root — derive it: total - failed - errored (- skipped, if
-    you decide to track that; note it as a DECISION if you don't).
+    Redesigned mid-session (see TestResults' own docstring for the full reasoning):
+    build exactly ONE `Test` per <testcase>, unconditionally, and append it to one
+    list. total/passed/failed/errored/skipped/failures/failing_names/all_names are
+    now all properties on TestResults, derived from that list — nothing here needs
+    to remember to update five different counters and two different name-sets by
+    hand. If you find yourself writing an `if` that skips appending a Test for some
+    testcase, that's the bug this redesign exists to make impossible.
 
-    A <testcase>'s identity for the failing_names set: pytest writes `classname`
-    and `name` attributes — join them the way pytest's own `::` node-id format
-    does, so these names line up with what `run_tests`' own pytest invocation
-    would print and what a baseline snapshot stores.
+    Per <testsuite> (walk every one via root.findall("testsuite") — a fixture with
+    TWO suites is the only way to prove you're not just reading root[0]), per
+    <testcase> inside it:
+      - name = f"{classname}::{name}" from the testcase's own attributes — this is
+        pytest's own node-id format, and must match what a baseline snapshot stores.
+      - status, CONFIRMED against real pytest output this session:
+          <failure> child present -> "failed"   (covers BOTH a real assertion
+                                                   failure AND an exception raised
+                                                   inside the test body — pytest's
+                                                   own JUnit output does not
+                                                   distinguish these two)
+          <error> child present   -> "errored"  (only seen from a FIXTURE
+                                                   setup/teardown failure, not
+                                                   from the test body itself)
+          <skipped> child present -> "skipped"
+          none of the above       -> "passed"
+      - message: the element's `message` ATTRIBUTE (`.attrib.get("message", "")`),
+        never `.text` — `.text` is the full traceback dump, not the one-line
+        summary. Empty string for a pass.
+
+    Empty/no-<testsuite> input (empty string, "<testsuites></testsuites>", or a
+    totally different root tag) must produce TestResults(tests=[]) — not crash.
+    That's the most common input this function will ever receive in the general
+    case, and it should just fall out naturally now: an empty `tests` list makes
+    every derived property correctly report zero/empty on its own.
     """
     tree = ET.ElementTree(ET.fromstring(xml_text))
     root = tree.getroot()
 
-    total = 0
-    passed = 0
-    failed = 0
-    errored = 0
-    failures = []
-    
+    tests: list[Test] = []
+
     for suite in root.findall("testsuite"):
-        total = int(suite.attrib.get("tests", 0))
-        failed = int(suite.attrib.get("failures",0))
-        errored = int(suite.attrib.get("errors",0))
-        passed = total - failed - errored
+        for testcase in suite.findall("testcase"):
+            name = f"{testcase.attrib.get('classname')}::{testcase.attrib.get('name')}"
+            failure_elem = testcase.find("failure")
+            error_elem = testcase.find("error")
+            skipped_elem = testcase.find("skipped")
 
-        if failed > 0 or errored > 0:
-            for testcase in suite.findall("testcase"):
-                name = f"{testcase.attrib.get('classname')}::{testcase.attrib.get('name')}"
-                failure_elem = testcase.find("failure")
-                error_elem = testcase.find("error")
-                if failure_elem is not None:
-                    message = failure_elem.attrib.get("message", "")
-                    failures.append(TestFailure(name=name, message=message))
-                elif error_elem is not None:
-                    message = error_elem.attrib.get("message", "")
-                    failures.append(TestFailure(name=name, message=message))
+            if failure_elem is not None:
+                tests.append(Test(name=name, status="failed", message=failure_elem.attrib.get("message", "")))
+            elif error_elem is not None:
+                tests.append(Test(name=name, status="errored", message=error_elem.attrib.get("message", "")))
+            elif skipped_elem is not None:
+                tests.append(Test(name=name, status="skipped", message=skipped_elem.attrib.get("message", "")))
+            else:
+                tests.append(Test(name=name, status="passed"))
 
-    return TestResults(
-        total=total,
-        passed=passed,
-        failed=failed,
-        errored=errored,
-        failures=failures
-    )
+    return TestResults(tests=tests)
 
 
 def compare_to_baseline(
@@ -159,8 +223,40 @@ def compare_to_baseline(
     An empty `baseline_failing` (no prior baseline, or a genuinely clean baseline)
     means every current failure shows up as newly_failing — correct, not a bug:
     on a repo's very first run, there's nothing yet to compare against.
+
+    UPDATED per session discussion: "not currently failing" is not the same claim
+    as "passed." A baseline name that's absent from `results.failing_names` might
+    have genuinely been fixed, or it might simply not have run this time at all
+    (file renamed, deleted, deselected) — `not in failing_names` can't tell those
+    apart on its own. `results.all_names` is what makes the distinction possible:
+    only count a baseline name as newly_passing if it's IN `all_names` (it ran,
+    and had no failure). If it's in neither `failing_names` nor `all_names`, it
+    was never observed this run at all — exclude it from every category rather
+    than guessing. Deliberately NOT a fourth field on BaselineDiff: silently
+    excluding a name you have no evidence about is more honest than asserting
+    something (passing or not) you can't actually support, and it keeps this
+    report answering exactly one question — did this change break or fix
+    anything, among tests that still exist — rather than also trying to report
+    on baseline/test-suite drift, which is a separate, occasional concern.
     """
-    raise NotImplementedError
+    newly_failing = []
+    newly_passing = []
+    still_failing = []
+
+    for name in results.failing_names:
+        if name not in baseline_failing:
+            newly_failing.append(name)
+        else:
+            still_failing.append(name)
+
+    for name in baseline_failing:
+        if name not in results.failing_names and name in results.all_names:
+            newly_passing.append(name)
+    return BaselineDiff(
+        still_failing=sorted(still_failing),
+        newly_failing=sorted(newly_failing),
+        newly_passing=sorted(newly_passing),
+    )
 
 
 # --------------------------------------------------------------------- SHELL
