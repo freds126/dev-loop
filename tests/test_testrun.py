@@ -3,6 +3,7 @@
 The tests here are not exhaustive, but they cover the main functionality. The agent will be able to run tests and compare results to a baseline snapshot.
 """
 import pytest
+import sys
 from pathlib import Path
 
 TEST_JUNIT_XML = Path("tests/data/results_demo.xml").read_text()
@@ -150,5 +151,109 @@ def test_compare_to_baseline_excludes_vanished_tests():
     assert diff.newly_failing == []
     assert diff.newly_passing == []
 
+# ---------------------------------------------------------- run_tests
+from agentic.testrun import run_tests
+INTERPRETER = Path(sys.executable)
 
+def test_run_tests_produces_parseable_xml(tmp_path):
+    (tmp_path / "test_example.py").write_text(
+        "def test_pass():\n    assert True\n"
+        "def test_fail():\n    assert False\n"
+    )
+    xml_text = run_tests(tmp_path, INTERPRETER)
+    results = parse_junit_xml(xml_text)
+    assert results.total == 2
+    assert results.passed == 1
+    assert results.failed == 1
 
+def test_run_tests_does_not_raise_when_tests_fail(tmp_path):
+    (tmp_path / "test_example.py").write_text("def test_fail():\n    assert False\n")
+    run_tests(tmp_path, INTERPRETER)   # must not raise
+
+def test_run_tests_raises_on_collection_error(tmp_path):
+    (tmp_path / "test_broken.py").write_text("from nonexistent_module import thing\n")
+    with pytest.raises(RuntimeError):
+        run_tests(tmp_path, INTERPRETER)
+
+def test_run_tests_raises_when_nothing_collected(tmp_path):
+    (tmp_path / "test_example.py").write_text("def test_pass():\n    assert True\n")
+    with pytest.raises(RuntimeError):
+        run_tests(tmp_path, INTERPRETER, "-k", "no_such_test_name")
+
+# ---------------------------------------------------------- baseline file I/O
+from agentic.testrun import (
+    _baseline_dir,
+    load_current_baseline,
+    save_baseline,
+    prune_baselines,
+    Baseline,
+)
+
+def test_baseline_dir_creates_and_returns_the_directory(tmp_path):
+    result = _baseline_dir(tmp_path)
+    assert result == tmp_path / ".ai" / "baselines"
+    assert result.is_dir()
+
+def test_baseline_to_json_and_from_json_round_trip():
+    # Sanity check on the serialization itself, independent of file I/O.
+    baseline = Baseline(
+        created_at="2026-01-01T00:00:00",
+        commit="abc123",
+        failing_tests=frozenset({"tests/test_foo.py::test_a", "tests/test_bar.py::test_b"}),
+        note="known WIP",
+    )
+    restored = Baseline.from_json(baseline.to_json())
+    assert restored == baseline
+
+def test_save_baseline_writes_a_readable_file(tmp_path):
+    failing = frozenset({"tests/test_foo.py::test_a"})
+    path = save_baseline(tmp_path, failing, commit="deadbeef", note="testing")
+    assert path.exists()
+    assert path.parent == _baseline_dir(tmp_path)
+
+    loaded = load_current_baseline(tmp_path)
+    assert loaded is not None
+    assert loaded.failing_tests == failing
+    assert loaded.commit == "deadbeef"
+    assert loaded.note == "testing"
+
+def test_save_baseline_never_overwrites_even_when_called_twice_rapidly(tmp_path):
+    # The exact case microsecond precision exists to prevent — two saves close
+    # together in wall-clock time must still produce two distinct files.
+    first = save_baseline(tmp_path, frozenset({"a"}), commit="c1")
+    second = save_baseline(tmp_path, frozenset({"b"}), commit="c2")
+    assert first != second
+    assert first.exists()
+    assert second.exists()
+    assert len(list(_baseline_dir(tmp_path).glob("baseline_*.json"))) == 2
+
+def test_load_current_baseline_returns_none_when_none_saved(tmp_path):
+    assert load_current_baseline(tmp_path) is None
+
+def test_load_current_baseline_returns_the_most_recent(tmp_path):
+    # Write two snapshots directly with EXPLICIT, unambiguous timestamps in
+    # their filenames, rather than relying on save_baseline's real-clock
+    # timing — isolates this test from the collision case tested above.
+    baseline_dir = _baseline_dir(tmp_path)
+    older = Baseline(created_at="2026-01-01T00:00:00", commit="old", failing_tests=frozenset({"a"}))
+    newer = Baseline(created_at="2026-06-01T00:00:00", commit="new", failing_tests=frozenset({"b"}))
+    (baseline_dir / "baseline_2026-01-01T00:00:00.json").write_text(older.to_json())
+    (baseline_dir / "baseline_2026-06-01T00:00:00.json").write_text(newer.to_json())
+
+    loaded = load_current_baseline(tmp_path)
+    assert loaded.commit == "new"
+
+def test_prune_baselines_keeps_only_the_most_recent_n(tmp_path):
+    baseline_dir = _baseline_dir(tmp_path)
+    for i in range(5):
+        b = Baseline(created_at=f"2026-01-0{i+1}T00:00:00", commit=f"c{i}", failing_tests=frozenset())
+        (baseline_dir / f"baseline_2026-01-0{i+1}T00:00:00.json").write_text(b.to_json())
+
+    deleted = prune_baselines(tmp_path, keep=2)
+    remaining = sorted(baseline_dir.glob("baseline_*.json"))
+
+    assert len(deleted) == 3
+    assert len(remaining) == 2
+    # the two that survive must be the two NEWEST, not an arbitrary two
+    assert remaining[-1].name == "baseline_2026-01-05T00:00:00.json"
+    assert remaining[-2].name == "baseline_2026-01-04T00:00:00.json"

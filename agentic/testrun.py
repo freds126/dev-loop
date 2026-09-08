@@ -32,12 +32,17 @@ Rules this module holds to (same spirit as gitctx.py):
     exactly the case this distinction exists to handle correctly.
 """
 from __future__ import annotations
+from datetime import datetime
 
 import subprocess
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 import xml.etree.ElementTree as ET
+import tempfile
+import json
+
 
 # ---------------------------------------------------------------- data types
 
@@ -125,6 +130,26 @@ class Baseline:
                          # context for "what code was this failing-set true of"
     failing_tests: frozenset[str]
     note: str = ""      # optional human reason ("known WIP: canonical parser rewrite")
+
+    def to_json(self) -> str:
+        return json.dumps({
+            "created_at": self.created_at,
+            "commit": self.commit,
+            "failing_tests": sorted(self.failing_tests),   # frozenset isn't JSON-serializable —
+                                                             # sorted() also makes the file's diff
+                                                             # deterministic when committed to git
+            "note": self.note,
+        })
+
+    @staticmethod
+    def from_json(text: str) -> "Baseline":
+        data = json.loads(text)
+        return Baseline(
+            created_at=data["created_at"],
+            commit=data["commit"],
+            failing_tests=frozenset(data["failing_tests"]),
+            note=data.get("note", ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -283,13 +308,29 @@ def run_tests(
     subprocess.run with an argument list: [str(interpreter), "-m", "pytest",
     "--junit-xml", <path>, *pytest_args]. Do NOT raise on every non-zero
     returncode the way _run_git does — pytest exits 1 for "ran fine, some tests
-    failed," which is a normal result to parse, not an error. DECISION: which
-    exit codes actually mean "this tool couldn't get you a result at all" and
-    should raise? (usage error, no tests collected, internal error, a collection
-    crash like mvp's test_matchers.py). Check pytest's own documented exit codes
-    and verify against that real file rather than guessing.
+    failed," which is a normal result to parse, not an error. 
+
+    Raise an error if the test didnt run, e.g. if the interpreter is wrong, pytest usage is wrong, or no tests were
+    collected. Verify empirically against mvp's tests/test_matchers.py situation — that file currently has an import error that aborts collection entirely, 
+    which is exactly the case this distinction exists to handle correctly.
     """
-    raise NotImplementedError
+    tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
+    tmp.close()
+
+    result = subprocess.run(
+        [str(interpreter), "-m", "pytest", f"--junit-xml={tmp.name}", *pytest_args],
+        cwd=str(repo_path),   # pytest has no -C
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"pytest could not produce results (exit {result.returncode}):\n{result.stderr}")
+
+    xml_text = Path(tmp.name).read_text()
+    os.remove(tmp.name)   # clean up
+
+    return xml_text
 
 
 def _baseline_dir(target_repo: Path) -> Path:
@@ -299,7 +340,9 @@ def _baseline_dir(target_repo: Path) -> Path:
     reimplements; not part of the module's public surface (Principle 3 from
     gitctx.py's design: expose only what a caller actually needs to say).
     """
-    raise NotImplementedError
+    baseline_dir = Path(target_repo / ".ai" / "baselines")
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    return baseline_dir
 
 
 def load_current_baseline(target_repo: Path) -> Baseline | None:
@@ -314,7 +357,13 @@ def load_current_baseline(target_repo: Path) -> Baseline | None:
     (probably: treat every current failure as newly_failing, and maybe prompt
     to save this run as the initial baseline).
     """
-    raise NotImplementedError
+    baseline_dir = _baseline_dir(target_repo)
+    baseline_files = sorted(baseline_dir.glob("baseline_*.json"))
+    if not baseline_files:
+        return None
+
+    latest_baseline = baseline_files[-1]
+    return Baseline.from_json(latest_baseline.read_text())
 
 
 def save_baseline(
@@ -333,7 +382,19 @@ def save_baseline(
 
     Returns the path written, so a caller (e.g. a CLI) can report it.
     """
-    raise NotImplementedError
+    baseline_dir = _baseline_dir(target_repo)
+    timestamp = datetime.now().isoformat(timespec="microseconds")
+    filename = f"baseline_{timestamp}.json"
+    path = baseline_dir / filename
+
+    baseline = Baseline(
+        created_at=timestamp,
+        commit=commit,
+        failing_tests=failing_tests,
+        note=note,
+    )
+    path.write_text(baseline.to_json())
+    return path
 
 
 def prune_baselines(target_repo: Path, keep: int) -> list[Path]:
@@ -344,4 +405,9 @@ def prune_baselines(target_repo: Path, keep: int) -> list[Path]:
     you actually have. Never called automatically; a deliberate cleanup action,
     same as save_baseline.
     """
-    raise NotImplementedError
+    baseline_dir = _baseline_dir(target_repo)
+    baseline_files = sorted(baseline_dir.glob("baseline_*.json"))
+    to_delete = baseline_files[:-keep] if keep > 0 else baseline_files
+    for path in to_delete:
+        path.unlink()
+    return to_delete
