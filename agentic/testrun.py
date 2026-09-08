@@ -34,10 +34,12 @@ Rules this module holds to (same spirit as gitctx.py):
 from __future__ import annotations
 
 import subprocess
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 import xml.etree.ElementTree as ET
+import tempfile
 
 # ---------------------------------------------------------------- data types
 
@@ -283,13 +285,29 @@ def run_tests(
     subprocess.run with an argument list: [str(interpreter), "-m", "pytest",
     "--junit-xml", <path>, *pytest_args]. Do NOT raise on every non-zero
     returncode the way _run_git does — pytest exits 1 for "ran fine, some tests
-    failed," which is a normal result to parse, not an error. DECISION: which
-    exit codes actually mean "this tool couldn't get you a result at all" and
-    should raise? (usage error, no tests collected, internal error, a collection
-    crash like mvp's test_matchers.py). Check pytest's own documented exit codes
-    and verify against that real file rather than guessing.
+    failed," which is a normal result to parse, not an error. 
+
+    Raise an error if the test didnt run, e.g. if the interpreter is wrong, pytest usage is wrong, or no tests were
+    collected. Verify empirically against mvp's tests/test_matchers.py situation — that file currently has an import error that aborts collection entirely, 
+    which is exactly the case this distinction exists to handle correctly.
     """
-    raise NotImplementedError
+    tmp = tempfile.NamedTemporaryFile(suffix=".xml", delete=False)
+    tmp.close()
+
+    result = subprocess.run(
+        [str(interpreter), "-m", "pytest", f"--junit-xml={tmp.name}", *pytest_args],
+        cwd=str(repo_path),   # pytest has no -C
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"pytest could not produce results (exit {result.returncode}):\n{result.stderr}")
+
+    xml_text = Path(tmp.name).read_text()
+    os.remove(tmp.name)   # clean up
+
+    return xml_text
 
 
 def _baseline_dir(target_repo: Path) -> Path:

@@ -3,6 +3,7 @@
 The tests here are not exhaustive, but they cover the main functionality. The agent will be able to run tests and compare results to a baseline snapshot.
 """
 import pytest
+import sys
 from pathlib import Path
 
 TEST_JUNIT_XML = Path("tests/data/results_demo.xml").read_text()
@@ -150,5 +151,31 @@ def test_compare_to_baseline_excludes_vanished_tests():
     assert diff.newly_failing == []
     assert diff.newly_passing == []
 
+# ---------------------------------------------------------- run_tests
+from agentic.testrun import run_tests
+INTERPRETER = Path(sys.executable)
 
+def test_run_tests_produces_parseable_xml(tmp_path):
+    (tmp_path / "test_example.py").write_text(
+        "def test_pass():\n    assert True\n"
+        "def test_fail():\n    assert False\n"
+    )
+    xml_text = run_tests(tmp_path, INTERPRETER)
+    results = parse_junit_xml(xml_text)
+    assert results.total == 2
+    assert results.passed == 1
+    assert results.failed == 1
 
+def test_run_tests_does_not_raise_when_tests_fail(tmp_path):
+    (tmp_path / "test_example.py").write_text("def test_fail():\n    assert False\n")
+    run_tests(tmp_path, INTERPRETER)   # must not raise
+
+def test_run_tests_raises_on_collection_error(tmp_path):
+    (tmp_path / "test_broken.py").write_text("from nonexistent_module import thing\n")
+    with pytest.raises(RuntimeError):
+        run_tests(tmp_path, INTERPRETER)
+
+def test_run_tests_raises_when_nothing_collected(tmp_path):
+    (tmp_path / "test_example.py").write_text("def test_pass():\n    assert True\n")
+    with pytest.raises(RuntimeError):
+        run_tests(tmp_path, INTERPRETER, "-k", "no_such_test_name")
