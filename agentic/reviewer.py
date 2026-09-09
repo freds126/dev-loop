@@ -19,6 +19,8 @@ from __future__ import annotations
 import anthropic
 
 from agentic.gitctx import RepoContext
+from dataclasses import dataclass
+from typing import Literal
 
 
 REVIEWER_SYSTEM_PROMPT = """You are reviewing a code change. You'll see a diff \
@@ -27,6 +29,90 @@ for bugs, missing edge cases, and inconsistency with the surrounding code style.
 Don't comment on formatting. If something looks intentional but risky, say so — \
 don't assume it's a mistake."""
 
+@dataclass 
+class ReviewFinding:
+    severity: Literal["blocking", "advisory"]
+
+    file: str | None      # None for a review that isn't tied to one file — an
+                           # architectural comment, missing test coverage, etc.
+    line: int | None       # singular, matches the type — a single anchor line,
+                           # not a range (int | None can't represent a range anyway)
+    issue: str
+    why: str
+    fix: str | None        # not every issue has a clean concrete fix — "this
+                           # looks risky, worth double-checking" is a valid
+                           # finding with nothing to literally rewrite
+
+@dataclass
+class Review:
+    status: Literal["PASS", "NEEDS_CHANGES"]
+    findings: list[ReviewFinding]
+
+
+REVIEW_TOOL = {
+    "name": "submit_review",
+    "description": "Submit the structured review of a code change.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "enum": ["PASS", "NEEDS_CHANGES"]},
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": {"type": "string", "enum": ["blocking", "advisory"]},
+                        "file": {"type": ["string", "null"]},
+                        "line": {"type": ["integer", "null"]},
+                        "issue": {"type": "string"},
+                        "why": {"type": "string"},
+                        "fix": {"type": ["string", "null"]},
+                    },
+                    "required": ["severity", "file", "line", "issue", "why", "fix"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["status", "findings"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+def parse_review_response(data: dict) ->Review:
+    """ Parses a structured response from reviewer, into a Review.
+    since strict:True in the tool, all fields MUST exist, fail loudly otherwise
+    
+    Args: tool response
+    Returns: class: Review"""
+
+    review_findings = []
+    for find in data["findings"]:
+        review_findings.append(ReviewFinding(severity=find["severity"],
+                                             file=find["file"],
+                                             line=find["line"],
+                                             issue=find["issue"],
+                                             why=find["why"],
+                                             fix=find["fix"]))
+    return Review(status=data["status"], findings=review_findings)
+
+def review_diff_structured(context: RepoContext, model: str = "claude-haiku-4-5") -> Review:
+    """ structured diff review that uses a predefined json-schema, to enable reliable parsing of responses"""
+    client = anthropic.Client()
+    user_message = f"{context.diff}\n\nUnreviewed files: {context.unreviewed}"
+    response = client.messages.create(
+        model=model,
+        system=REVIEWER_SYSTEM_PROMPT,   # separate parameter
+        messages=[{"role": "user", "content": user_message}],
+        max_tokens=1000,
+        tools=[REVIEW_TOOL],
+        tool_choice={"type": "tool", "name": "submit_review"}
+    )
+    tool_use = response.content[0]
+    data = tool_use.input
+    # data["findings"] is a list of dicts, each matching ReviewFinding's fields
+    # data["status"] is the string "PASS" or "NEEDS_CHANGES"
+    return parse_review_response(data)
 
 def review_diff(context: RepoContext, model: str = "claude-haiku-4-5") -> str:
     """Send `context`'s diff to `model`, return its raw text response.
@@ -37,22 +123,6 @@ def review_diff(context: RepoContext, model: str = "claude-haiku-4-5") -> str:
     try/except now would be solving a problem you don't have evidence for yet.
 
     client = anthropic.Anthropic() fresh, inline — no shared/pooled client.
-    Fine at this scale; revisit only if it becomes a real cost later.
-
-    DECISION: how much of `context` goes into the user message? At minimum,
-    `context.diff`. Consider whether `context.unreviewed` (files that exist
-    but weren't reviewed at all) belongs in the prompt too, as a caveat the
-    model should mention rather than silently ignore — or whether that's
-    better left for the caller to report separately, outside the model's
-    response entirely. Either is defensible; pick one and know why.
-
-    DECISION: max_tokens. This is a raw-text review, not a single classification
-    — needs enough room for a few paragraphs, not the 100 from the sanity
-    check. Pick a number, run it, and see whether real output gets cut off
-    (check response.stop_reason == "max_tokens" — that's the tell).
-
-    response.content is a list of blocks (a reply can mix text/tool-use/etc).
-    For a plain text reply, the text lives at response.content[0].text.
     """
     client = anthropic.Client()
     user_message = f"{context.diff}\n\nUnreviewed files: {context.unreviewed}"
