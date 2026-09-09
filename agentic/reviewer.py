@@ -150,20 +150,11 @@ GREP_TOOL = {
 def read_file_tool(repo_path: Path, path: str) -> str:
     """Read `path` (relative), or return an error STRING — never raise.
 
-    DECISION, and it's a different rule than _run_git's "never swallow a real
-    failure": here, a bad path is the MODEL's own mistake, not a genuine system
-    failure. The model should get a chance to see "no such file" and try again
-    with a corrected path — that only works if the error becomes data fed back
-    into the conversation (a tool_result), not a Python exception that kills
-    the whole loop. Distinguish this from _run_git deliberately: there, the
-    caller can't recover from a git failure by trying something else; here,
-    the agent genuinely can.
-
-    SECURITY, not optional: resolve the path and verify it's still INSIDE
-    repo_path before reading anything. The model can hallucinate or be
-    adversarially prompted into requesting "../../../../etc/passwd" — nothing
-    stops it from asking. Reject anything that resolves outside repo_path,
-    as an error string, same as a missing file.
+    resolves path, and checks its within repo.
+    Doesnt allow reading of .gitignored files but does allow untracked files.
+    Never raises, only returns a string describing the error, so the reviewer can retry. Specifically handles 
+    binary files, FileNotFound and IsADirectory with corresponding error messages.
+    Truncates files to MAX_CHARS_FILE, and adds a short message at the beginning if truncated.
     """
     repo_root = Path(repo_path).resolve()
     candidate = (repo_root / path).resolve()
