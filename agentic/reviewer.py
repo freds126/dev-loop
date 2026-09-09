@@ -199,8 +199,6 @@ def read_file_tool(repo_path: Path, path: str) -> str:
     except UnicodeDecodeError:
         return f"{path} is a binary file — can't be read as text"
     
-    
-
 
 def grep_tool(repo_path: Path, pattern: str) -> str:
     """`git -C repo_path grep -n <pattern>`, return its output (or a clear
@@ -213,7 +211,16 @@ def grep_tool(repo_path: Path, pattern: str) -> str:
     grep only searches tracked files and respects .gitignore automatically, so
     the model can't get noise back from .venv/, node_modules/, etc.
     """
-    raise NotImplementedError
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "grep", "-n", pattern],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return result.stdout
+    elif result.returncode == 1:
+        return "No matches found."
+    else:
+        return f"grep failed: {result.stderr}"
 
 
 def execute_tool(tool_use_block, repo_path: Path) -> dict:

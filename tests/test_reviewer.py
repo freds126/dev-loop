@@ -182,3 +182,49 @@ def test_read_file_tool_does_not_truncate_small_file(make_repo):
     assert result == content
     assert "truncated" not in result.lower()
 
+# ---------------------------------------------------------- grep_tool (pure filesystem, no API)
+from agentic.reviewer import grep_tool
+
+def test_grep_tool_finds_a_match(make_repo):
+    repo = make_repo("repo")
+    (repo / "code.py").write_text("def target_function():\n    pass\n")
+    subprocess.run(["git", "-C", str(repo), "add", "code.py"], check=True)
+
+    result = grep_tool(repo, "target_function")
+    assert "code.py" in result
+    assert "target_function" in result
+
+def test_grep_tool_reports_line_numbers(make_repo):
+    # git grep -n's whole point is the line number — worth locking in that
+    # the -n flag survives, not just that SOME output comes back.
+    repo = make_repo("repo")
+    (repo / "code.py").write_text("line one\nline two\ntarget line\n")
+    subprocess.run(["git", "-C", str(repo), "add", "code.py"], check=True)
+
+    result = grep_tool(repo, "target line")
+    assert "code.py:3:" in result
+
+def test_grep_tool_no_matches(make_repo):
+    repo = make_repo("repo")
+    result = grep_tool(repo, "this_pattern_appears_nowhere_xyz")
+    assert result == "No matches found."
+
+def test_grep_tool_invalid_pattern_returns_message_not_crash(make_repo):
+    # Same reasoning as read_file_tool's bad-path handling: a malformed regex
+    # is the MODEL's own mistake, recoverable by retrying — must come back as
+    # a string it can read and react to, never raise and kill the loop.
+    repo = make_repo("repo")
+    result = grep_tool(repo, "[")   # unbalanced bracket — invalid regex
+    assert "failed" in result.lower()
+
+def test_grep_tool_does_not_search_gitignored_files(make_repo):
+    # Same property as read_file_tool's gitignore test, one layer down:
+    # git grep only searches TRACKED files, so a gitignored secret should
+    # never surface in search results either.
+    repo = make_repo("repo")
+    (repo / ".gitignore").write_text("secret.txt\n")
+    (repo / "secret.txt").write_text("api_key=super-secret-value\n")
+
+    result = grep_tool(repo, "super-secret-value")
+    assert result == "No matches found."
+
