@@ -18,3 +18,7 @@ packages = ["agentic"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+addopts = "-m 'not live'"
+markers = [
+    "live: hits a real, paid external API — excluded by default, run explicitly with `pytest -m live`",
+]

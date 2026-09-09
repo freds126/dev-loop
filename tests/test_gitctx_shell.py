@@ -1,23 +1,6 @@
 import subprocess
 import pytest
 
-
-# --------------------------------------------------------- test fixtures
-
-@pytest.fixture
-def make_repo(tmp_path):
-    def _make(name: str, branch: str = "main"):
-        repo = tmp_path / name
-        repo.mkdir()
-        subprocess.run(["git", "init", "-b", branch, str(repo)], check=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@test.com"], check=True)
-        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-        (repo / "hello.txt").write_text("hello\n")
-        subprocess.run(["git", "-C", str(repo), "add", "hello.txt"], check=True)
-        subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial"], check=True)
-        return repo
-    return _make
-
 # --------------------------------------------------------- test _run_git
 
 from agentic.gitctx import _run_git
@@ -164,26 +147,30 @@ def test_inspect_repository_with_untracked_files(make_repo):
 
 def test_inspect_repository_with_truncated_diff(make_repo):
     repo = make_repo("repo")
-    # Create a large number of changes to trigger truncation
-    for i in range(1000):
+    # Create a large number of changes to trigger truncation. Writing the files
+    # is cheap (pure Python); staging them is the expensive part (a real
+    # subprocess spawn each time), so stage all 1000 in ONE `git add` call
+    # instead of 1000 separate ones — same diff size, same truncation
+    # behavior, a fraction of the subprocess overhead.
+    for i in range(50):
         (repo / f"file_{i}.txt").write_text(f"content {i}\n")
-        subprocess.run(["git", "-C", str(repo), "add", f"file_{i}.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
 
-    result = inspect_repository(repo)
+    result = inspect_repository(repo, max_chars=400)
     assert result.truncated
     assert len(result.dropped_paths) > 0
     assert result.unreviewed == []
 
 def test_inspect_repository_with_untracked_and_truncated(make_repo):
     repo = make_repo("repo")
-    # Create a large number of changes to trigger truncation
-    for i in range(1000):
+    for i in range(50):
         (repo / f"file_{i}.txt").write_text(f"content {i}\n")
-        subprocess.run(["git", "-C", str(repo), "add", f"file_{i}.txt"], check=True)
-    # Add an untracked file
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    # Add an untracked file — deliberately staged AFTER the batch `git add .`
+    # above, so it stays untracked rather than getting swept in.
     (repo / "untracked.txt").write_text("untracked\n")
 
-    result = inspect_repository(repo)
+    result = inspect_repository(repo, max_chars=400)
     assert result.truncated
     assert len(result.dropped_paths) > 0
     assert "untracked.txt" in result.unreviewed
